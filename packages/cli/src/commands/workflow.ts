@@ -7,7 +7,7 @@ import {
   loadRepoConfig,
   generateAndSetTitle,
   createWorkflowStore,
-  setUpGroupRun,
+  runGroupWorkflow,
 } from '@archon/core';
 import { WORKFLOW_EVENT_TYPES, type WorkflowEventType } from '@archon/workflows/store';
 import { configureIsolation, getIsolationProvider } from '@archon/isolation';
@@ -802,31 +802,6 @@ async function runWorkflowAgainstGroup(
     throw new Error('runWorkflowAgainstGroup called without options.group');
   }
 
-  const setup = await setUpGroupRun({
-    groupName,
-    workflowName,
-    workflow,
-  });
-  const {
-    group,
-    members,
-    branch,
-    baseBranch,
-    worktree,
-    resolvedWorkflow: groupResolvedWorkflow,
-  } = setup;
-
-  console.log(`Running workflow: ${workflowName}`);
-  console.log(`Workspace group: ${groupName} (${members.length} members)`);
-  console.log(`Branch: ${branch} (base: ${baseBranch})`);
-  console.log('');
-
-  console.log(`Group worktree: ${worktree.groupDir}`);
-  for (const m of members) {
-    console.log(`  ${m.relativePath} → ${worktree.memberDirs[m.codebaseId] ?? '(missing)'}`);
-  }
-  console.log('');
-
   // Standard CLI plumbing: adapter, conversation, event subscription.
   const adapter = new CLIAdapter();
   const conversationId = options.conversationId ?? generateConversationId();
@@ -861,22 +836,38 @@ async function runWorkflowAgainstGroup(
     );
   }
 
-  let result: Awaited<ReturnType<typeof executeWorkflow>>;
+  // Delegate setup + execute to the shared core helper. CLI-specific
+  // formatting (the running/branch banner, member dirs listing) lands in the
+  // onSetupComplete callback so it prints just before the executor starts.
+  let runResult: Awaited<ReturnType<typeof runGroupWorkflow>>;
   try {
-    result = await executeWorkflow(
-      createWorkflowDeps(),
-      adapter,
+    runResult = await runGroupWorkflow({
+      groupName,
+      workflowName,
+      workflow,
+      platform: adapter,
       conversationId,
-      worktree.groupDir,
-      groupResolvedWorkflow,
+      conversationDbId: conversation.id,
       userMessage,
-      conversation.id
-      // No codebaseId for group runs — the executor accepts undefined; per-codebase
-      // env vars and isolation env tracking don't apply at group scope.
-    );
+      onSetupComplete: setup => {
+        console.log(`Running workflow: ${workflowName}`);
+        console.log(`Workspace group: ${groupName} (${setup.members.length} members)`);
+        console.log(`Branch: ${setup.branch} (base: ${setup.baseBranch})`);
+        console.log('');
+        console.log(`Group worktree: ${setup.worktree.groupDir}`);
+        for (const m of setup.members) {
+          console.log(
+            `  ${m.relativePath} → ${setup.worktree.memberDirs[m.codebaseId] ?? '(missing)'}`
+          );
+        }
+        console.log('');
+      },
+    });
   } finally {
     unsubscribe?.();
   }
+  const { setup, result } = runResult;
+  const { group, branch, worktree } = setup;
 
   if (result.success && 'paused' in result && result.paused) {
     console.log('\nWorkflow paused — waiting for approval.');

@@ -129,8 +129,29 @@ mock.module('../workflows/store-adapter', () => ({
   createWorkflowDeps: mock(() => ({})),
 }));
 
-const mockSetUpGroupRun = mock(() =>
-  Promise.resolve({
+/**
+ * Mock for runGroupWorkflow — the shared helper that orchestrator delegates
+ * to for /workflow run --group dispatch. Default implementation invokes the
+ * onSetupComplete callback (so we can assert the orchestrator's user-facing
+ * platform message) and returns a successful result.
+ *
+ * Tests can override per-call via `mockRunGroupWorkflow.mockResolvedValueOnce(...)`
+ * or `.mockRejectedValueOnce(...)`.
+ */
+function makeFakeSetup(): {
+  group: { id: string; name: string; parent_path: string; created_at: Date };
+  members: { codebaseId: string; sourceRepoPath: string; relativePath: string }[];
+  branch: string;
+  baseBranch: string;
+  worktree: { groupDir: string; memberDirs: Record<string, string> };
+  groupContext: {
+    groupName: string;
+    groupDir: string;
+    members: { relativePath: string; memberDir: string }[];
+  };
+  resolvedWorkflow: WorkflowDefinition;
+} {
+  return {
     group: {
       id: 'group-1',
       name: 'platform',
@@ -159,10 +180,23 @@ const mockSetUpGroupRun = mock(() =>
       ],
     },
     resolvedWorkflow: makeTestWorkflow({ name: 'orient' }),
-  })
+  };
+}
+
+const mockRunGroupWorkflow = mock(
+  async (opts: { onSetupComplete?: (s: ReturnType<typeof makeFakeSetup>) => unknown }) => {
+    const setup = makeFakeSetup();
+    if (opts.onSetupComplete) {
+      await opts.onSetupComplete(setup);
+    }
+    return {
+      setup,
+      result: { success: true, workflowRunId: 'run-1' },
+    };
+  }
 );
 mock.module('../workflows/group-run', () => ({
-  setUpGroupRun: mockSetUpGroupRun,
+  runGroupWorkflow: mockRunGroupWorkflow,
 }));
 
 const mockGetPausedWorkflowRun = mock(() => Promise.resolve(null as unknown));
@@ -1646,20 +1680,24 @@ describe('handleMessage — /workflow run --group dispatch', () => {
     mockHandleCommand.mockReset();
     mockGetOrCreateConversation.mockReset();
     mockExecuteWorkflow.mockReset();
-    mockSetUpGroupRun.mockClear();
+    mockRunGroupWorkflow.mockClear();
+    // Restore the default implementation that invokes onSetupComplete and resolves successfully.
+    mockRunGroupWorkflow.mockImplementation(
+      async (opts: { onSetupComplete?: (s: ReturnType<typeof makeFakeSetup>) => unknown }) => {
+        const setup = makeFakeSetup();
+        if (opts.onSetupComplete) await opts.onSetupComplete(setup);
+        return { setup, result: { success: true, workflowRunId: 'run-1' } };
+      }
+    );
   });
 
-  test('routes to handleGroupWorkflowRunCommand and calls executeWorkflow with the group cwd', async () => {
+  test('routes to runGroupWorkflow with the right inputs and announces the worktree', async () => {
     const conversation = makeConversation({ codebase_id: null });
     mockGetOrCreateConversation.mockReturnValueOnce(Promise.resolve(conversation));
-    // parseCommand returns {command:'workflow', args:[...]} so the orchestrator
-    // takes the deterministic-command branch.
     mockParseCommand.mockReturnValue({
       command: 'workflow',
       args: ['run', 'orient', '--group', 'platform', 'do the thing'],
     });
-    // handleCommand returns a workflow result with a group set, which triggers
-    // the group dispatcher path we added in 54037cb0.
     const definition = makeTestWorkflow({ name: 'orient' });
     mockHandleCommand.mockResolvedValueOnce({
       success: true,
@@ -1670,27 +1708,30 @@ describe('handleMessage — /workflow run --group dispatch', () => {
     const platform = makePlatform();
     await handleMessage(platform, 'conv-1', '/workflow run orient --group platform "do the thing"');
 
-    // Group setup ran with the workflow + group from the parsed command.
-    expect(mockSetUpGroupRun).toHaveBeenCalledTimes(1);
-    const setupArgs = mockSetUpGroupRun.mock.calls[0]![0] as {
+    // runGroupWorkflow received the right inputs.
+    expect(mockRunGroupWorkflow).toHaveBeenCalledTimes(1);
+    const args = mockRunGroupWorkflow.mock.calls[0]![0] as {
       groupName: string;
       workflowName: string;
+      conversationId: string;
+      conversationDbId: string;
+      userMessage: string;
     };
-    expect(setupArgs.groupName).toBe('platform');
-    expect(setupArgs.workflowName).toBe('orient');
+    expect(args.groupName).toBe('platform');
+    expect(args.workflowName).toBe('orient');
+    expect(args.conversationId).toBe('conv-1');
+    expect(args.conversationDbId).toBe(conversation.id);
+    expect(args.userMessage).toBe('do the thing');
 
-    // executeWorkflow was called with cwd = the group dir from the setup mock,
-    // and with the resolvedWorkflow (group-substituted) — not the raw definition.
-    expect(mockExecuteWorkflow).toHaveBeenCalledTimes(1);
-    const execArgs = mockExecuteWorkflow.mock.calls[0]!;
-    // executor signature: (deps, platform, conversationId, cwd, workflow, userMessage, conversationDbId, ...)
-    expect(execArgs[3]).toBe('/wt/platform/feat-1234567890');
-    const passedWorkflow = execArgs[4] as { name: string };
-    expect(passedWorkflow.name).toBe('orient');
-    expect(execArgs[5]).toBe('do the thing');
+    // The orchestrator's onSetupComplete callback fired the worktree-created
+    // platform message; assert it landed.
+    const sendCalls = (platform.sendMessage as ReturnType<typeof mock>).mock.calls;
+    const messages = sendCalls.map(c => String(c[1]));
+    expect(messages.some(m => m.includes('/wt/platform/feat-1234567890'))).toBe(true);
+    expect(messages.some(m => m.includes('feat-1234567890'))).toBe(true);
   });
 
-  test('surfaces a friendly error when setUpGroupRun throws (e.g. unknown group)', async () => {
+  test('surfaces a friendly error when runGroupWorkflow throws (e.g. unknown group)', async () => {
     const conversation = makeConversation({ codebase_id: null });
     mockGetOrCreateConversation.mockReturnValueOnce(Promise.resolve(conversation));
     mockParseCommand.mockReturnValue({
@@ -1703,13 +1744,11 @@ describe('handleMessage — /workflow run --group dispatch', () => {
       message: 'Starting workflow `orient` against group `nope`',
       workflow: { definition, args: '', group: 'nope' },
     });
-    mockSetUpGroupRun.mockRejectedValueOnce(new Error('No workspace group named "nope".'));
+    mockRunGroupWorkflow.mockRejectedValueOnce(new Error('No workspace group named "nope".'));
 
     const platform = makePlatform();
     await handleMessage(platform, 'conv-1', '/workflow run orient --group nope ""');
 
-    // executeWorkflow must NOT be called when setup fails.
-    expect(mockExecuteWorkflow).not.toHaveBeenCalled();
     // The user-facing platform got an error message naming the group.
     const sendCalls = (platform.sendMessage as ReturnType<typeof mock>).mock.calls;
     const errorMessages = sendCalls.map(c => String(c[1]));

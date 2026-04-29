@@ -23,11 +23,17 @@ import {
   applyGroupSubstitutionsToWorkflow,
   type GroupSubstitutionContext,
 } from '@archon/workflows/utils/group-substitution';
-import type { WorkflowDefinition } from '@archon/workflows/schemas/workflow';
+import type {
+  WorkflowDefinition,
+  WorkflowExecutionResult,
+} from '@archon/workflows/schemas/workflow';
+import { executeWorkflow } from '@archon/workflows/executor';
+import type { IWorkflowPlatform } from '@archon/workflows/deps';
 import { createLogger } from '@archon/paths';
 import * as workspaceGroupDb from '../db/workspace-groups';
 import * as codebaseDb from '../db/codebases';
 import type { WorkspaceGroup } from '../types';
+import { createWorkflowDeps } from './store-adapter';
 
 let cachedLog: ReturnType<typeof createLogger> | undefined;
 function getLog(): ReturnType<typeof createLogger> {
@@ -184,4 +190,81 @@ export async function setUpGroupRun(opts: SetUpGroupRunOpts): Promise<GroupRunSe
     groupContext,
     resolvedWorkflow,
   };
+}
+
+export interface RunGroupWorkflowOpts {
+  groupName: string;
+  workflowName: string;
+  workflow: WorkflowDefinition;
+  platform: IWorkflowPlatform;
+  /** Platform conversation ID (the SSE/chat key). */
+  conversationId: string;
+  /** Database conversation row ID. */
+  conversationDbId: string;
+  userMessage: string;
+  /** Optional explicit branch (else auto-generated). Forwarded to setUpGroupRun. */
+  branch?: string;
+  /**
+   * Optional callback after worktree + substitution succeed but before
+   * executeWorkflow runs. Use this for caller-specific announcements
+   * (CLI prints `console.log`, orchestrator sends a platform message).
+   */
+  onSetupComplete?: (setup: GroupRunSetup) => Promise<void> | void;
+}
+
+export interface RunGroupWorkflowResult {
+  setup: GroupRunSetup;
+  result: WorkflowExecutionResult;
+}
+
+/**
+ * setUpGroupRun → onSetupComplete → executeWorkflow, in that order.
+ *
+ * Wraps the platform-agnostic core of "run a workflow against a registered
+ * workspace group." Both the CLI's runWorkflowAgainstGroup and the
+ * orchestrator's handleGroupWorkflowRunCommand call this so they can't drift
+ * on the actual setup + execute sequence.
+ *
+ * Caller responsibilities (kept outside this helper):
+ *   - Conversation creation/lookup (the IDs are inputs to this helper).
+ *   - Event subscriptions / SSE bridge wiring.
+ *   - Platform-specific announcements (use onSetupComplete for "before run"
+ *     output and inspect the returned `setup` for "after run" output like
+ *     auto-pr).
+ *   - Failure surface beyond what executeWorkflow returns (e.g. CLI's
+ *     `Worktree left in place at ...` line).
+ *
+ * Errors:
+ *   - setUpGroupRun failures bubble up unchanged so callers can format the
+ *     "set up failed" message in their own dialect.
+ *   - executeWorkflow returns a result object (with success: boolean); we
+ *     pass it through. We don't translate failures into thrown errors.
+ */
+export async function runGroupWorkflow(
+  opts: RunGroupWorkflowOpts
+): Promise<RunGroupWorkflowResult> {
+  const setup = await setUpGroupRun({
+    groupName: opts.groupName,
+    workflowName: opts.workflowName,
+    workflow: opts.workflow,
+    branch: opts.branch,
+  });
+
+  if (opts.onSetupComplete) {
+    await opts.onSetupComplete(setup);
+  }
+
+  const result = await executeWorkflow(
+    createWorkflowDeps(),
+    opts.platform,
+    opts.conversationId,
+    setup.worktree.groupDir,
+    setup.resolvedWorkflow,
+    opts.userMessage,
+    opts.conversationDbId
+    // No codebaseId for group runs — per-codebase env vars and isolation env
+    // tracking don't apply at group scope.
+  );
+
+  return { setup, result };
 }

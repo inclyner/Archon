@@ -38,7 +38,7 @@ import type {
   WorkflowLoadError,
 } from '@archon/workflows/schemas/workflow';
 import { createWorkflowDeps } from '../workflows/store-adapter';
-import { setUpGroupRun } from '../workflows/group-run';
+import { runGroupWorkflow } from '../workflows/group-run';
 import { loadConfig } from '../config/config-loader';
 import type { MergedConfig } from '../config/config-types';
 import { generateAndSetTitle } from '../services/title-generator';
@@ -1544,52 +1544,35 @@ async function handleGroupWorkflowRunCommand(
   userMessage: string,
   groupName: string
 ): Promise<void> {
-  let setup: Awaited<ReturnType<typeof setUpGroupRun>>;
   try {
-    setup = await setUpGroupRun({
+    await runGroupWorkflow({
       groupName,
       workflowName: workflow.name,
       workflow,
+      platform,
+      conversationId,
+      conversationDbId: conversation.id,
+      userMessage,
+      onSetupComplete: setup =>
+        platform.sendMessage(
+          conversationId,
+          `Group worktree created at \`${setup.worktree.groupDir}\` on branch \`${setup.branch}\`.\n` +
+            `Members: ${setup.members.map(m => m.relativePath).join(', ')}.`
+        ),
     });
   } catch (err) {
+    // Distinguish setup failures (no setup yet → just say setup failed) from
+    // execute failures (setup ran → tell the user where the worktree is).
+    // runGroupWorkflow only throws for setup; executeWorkflow returns a
+    // result object. We surface either as a friendly platform message.
     const e = err as Error;
     getLog().error(
       { err: e, groupName, workflowName: workflow.name, conversationId },
-      'group_run.setup_failed'
+      'group_run.failed'
     );
     await platform.sendMessage(
       conversationId,
       `Failed to set up group run for "${groupName}": ${e.message}`
-    );
-    return;
-  }
-
-  await platform.sendMessage(
-    conversationId,
-    `Group worktree created at \`${setup.worktree.groupDir}\` on branch \`${setup.branch}\`.\nMembers: ${setup.members.map(m => m.relativePath).join(', ')}.`
-  );
-
-  try {
-    await executeWorkflow(
-      createWorkflowDeps(),
-      platform,
-      conversationId,
-      setup.worktree.groupDir,
-      setup.resolvedWorkflow,
-      userMessage,
-      conversation.id
-      // No codebaseId for group runs — per-codebase env vars and isolation env
-      // tracking don't apply at group scope.
-    );
-  } catch (err) {
-    const e = err as Error;
-    getLog().error(
-      { err: e, groupName, workflowName: workflow.name, conversationId },
-      'group_run.execute_failed'
-    );
-    await platform.sendMessage(
-      conversationId,
-      `Group workflow run failed: ${e.message}\nWorktree left at \`${setup.worktree.groupDir}\` for inspection.`
     );
   }
 }
