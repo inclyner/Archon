@@ -1,6 +1,13 @@
 /**
- * `archon group push` — push each member worktree's branch to its remote and
- * (optionally) open a PR per child with cross-linked sibling URLs.
+ * `archon group push` — push each member worktree's branch to its own remote
+ * and (optionally) open a PR per child against that child's repo.
+ *
+ * Important: every PR is created **from the child's git worktree** (we pass
+ * `cwd: <worktree>` to `gh pr create`) — never from the group's parent dir.
+ * `gh` resolves the target repo via that worktree's `origin` remote, so each
+ * PR lands in its own repo. There is no "group PR." Cross-linking happens
+ * via PR body text: each PR's body lists the sibling PR URLs so a reviewer
+ * can navigate the set.
  *
  * Two-phase PR creation:
  *   1. Push each member, then `gh pr create` per member; collect URLs.
@@ -104,9 +111,11 @@ function parsePrNumber(url: string): number | undefined {
  */
 function buildBaseBody(groupName: string, branch: string, relativePath: string): string {
   return [
-    `Part of workspace group **${groupName}** on branch \`${branch}\`.`,
+    `This PR was opened **from the \`${relativePath}\` repo** as part of a coordinated cross-repo change.`,
     '',
-    `This PR is the **${relativePath}** slice of a coordinated cross-repo change.`,
+    `Workspace group: **${groupName}** · Branch: \`${branch}\`.`,
+    '',
+    'Each repo in the group has its own PR. There is no shared "group PR" — review and merge this PR like any other PR in this repo. Sibling PRs (if any) are listed below for context.',
     '',
     '_Created by `archon group push --pr`._',
   ].join('\n');
@@ -159,12 +168,15 @@ export async function pushGroupWorktree(
 
   if (options.dryRun) {
     console.log(
-      `Would push ${members.length} branches and ${options.openPrs ? 'open PRs' : 'skip PRs'}:`
+      `Would push ${members.length} branch(es), one per repo${options.openPrs ? ', and open one PR per repo:' : ':'}`
     );
     for (const m of members) {
-      console.log(`  ${m.relativePath}: git -C ${m.worktreePath} push -u origin ${branch}`);
+      console.log(`  [${m.relativePath}] git push -u origin ${branch}`);
+      console.log(`           (cwd: ${m.worktreePath})`);
       if (options.openPrs) {
-        console.log(`    gh pr create --head ${branch} (in ${m.worktreePath})`);
+        console.log(
+          `           then: gh pr create --head ${branch} (against ${m.relativePath}'s remote)`
+        );
       }
     }
     return result;
@@ -186,7 +198,7 @@ export async function pushGroupWorktree(
         timeout: 60000,
       });
       result.pushed.push({ relativePath: m.relativePath, worktreePath: m.worktreePath });
-      console.log(`  ✓ pushed ${m.relativePath}`);
+      console.log(`  ✓ pushed ${m.relativePath} (from ${m.worktreePath})`);
     } catch (err) {
       const e = err as Error & { stderr?: string };
       const message = (e.stderr || e.message).split('\n')[0] ?? 'push failed';
@@ -253,7 +265,7 @@ export async function pushGroupWorktree(
         continue;
       }
       result.prs.push({ relativePath: pushed.relativePath, url, number });
-      console.log(`  ✓ opened PR for ${pushed.relativePath}: ${url}`);
+      console.log(`  ✓ opened PR in ${pushed.relativePath} repo: ${url}`);
     } catch (err) {
       const e = err as Error & { stderr?: string };
       const message =
