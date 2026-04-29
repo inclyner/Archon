@@ -55,6 +55,18 @@ export type { PrState } from './pr-state';
 // --- Workspace groups ---
 export { ensureBranchAcrossMembers, BranchCoherenceError } from './workspace-group-branch';
 export type { BranchCoherenceMember, BranchCoherenceResult } from './workspace-group-branch';
+export {
+  createGroupWorktree,
+  removeGroupWorktree,
+  listGroupWorktrees,
+  GroupWorktreeError,
+} from './providers/workspace-group';
+export type {
+  GroupWorktreeMember,
+  GroupWorktreeRequest,
+  GroupWorktreeResult,
+  ListedGroupWorktree,
+} from './providers/workspace-group';
 
 // --- Worktree copy utility ---
 export {

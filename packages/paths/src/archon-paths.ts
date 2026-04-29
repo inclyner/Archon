@@ -90,6 +90,35 @@ export function getArchonWorktreesPath(): string {
 }
 
 /**
+ * Get the workspace-groups directory (~/.archon/workspace-groups/).
+ * Each registered group gets a subdirectory with worktrees underneath:
+ *   ~/.archon/workspace-groups/<group-name>/worktrees/<branch>/<member>/
+ */
+export function getWorkspaceGroupsPath(): string {
+  return join(getArchonHome(), 'workspace-groups');
+}
+
+/**
+ * Get the worktrees directory for a specific workspace group.
+ * Returns: ~/.archon/workspace-groups/<group-name>/worktrees/
+ */
+export function getWorkspaceGroupWorktreesPath(groupName: string): string {
+  return join(getWorkspaceGroupsPath(), groupName, 'worktrees');
+}
+
+/**
+ * Get the worktree directory for a specific (group, branch).
+ * Returns: ~/.archon/workspace-groups/<group-name>/worktrees/<branch>/
+ *
+ * Branch names that contain `/` are flattened to a single dirname segment by
+ * replacing `/` with `__`, since git allows slashes in branch names but they
+ * would otherwise create unintended directory hierarchy here.
+ */
+export function getWorkspaceGroupWorktreePath(groupName: string, branch: string): string {
+  return join(getWorkspaceGroupWorktreesPath(groupName), branch.replace(/\//g, '__'));
+}
+
+/**
  * Get the global config file path
  */
 export function getArchonConfigPath(): string {
