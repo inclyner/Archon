@@ -1,0 +1,38 @@
+name: archon-cross-repo-orient
+description: |
+  Use when: Starting work on a registered workspace group and you want the AI to orient itself across all member repos before doing anything.
+  Handles: Cross-repo onboarding, "what is this platform?", reading every CLAUDE.md the group exposes.
+  Capability: Lists every CLAUDE.md the AI can see across the group, then summarizes each repo's role and notable conventions.
+  Note: Requires `--group <name>` on the run; uses $GROUP, $GROUP_DIR, $REPOS, $REPO_<NAME>_DIR substitution.
+
+nodes:
+  - id: list-claude-mds
+    bash: |
+      set -e
+      echo "Group: $GROUP"
+      echo "Group dir: $GROUP_DIR"
+      echo
+      echo "Member repos:"
+      printf '%s\n' "$REPOS" | sed 's/^/  /'
+      echo
+      echo "CLAUDE.md files (depth <= 3):"
+      find "$GROUP_DIR" -maxdepth 3 -name 'CLAUDE.md' -type f 2>/dev/null | sed 's/^/  /'
+
+  - id: orient
+    depends_on: [list-claude-mds]
+    prompt: |
+      You are starting a session inside workspace group "$GROUP" rooted at $GROUP_DIR.
+
+      The previous step printed this listing:
+
+      $list-claude-mds.output
+
+      Read every CLAUDE.md file listed above. For each one give:
+
+      1. Which repo (or the parent) it belongs to
+      2. A one-line description of what that repo does
+      3. Notable conventions, constraints, or "do not touch" callouts
+
+      Then in 2-3 sentences, summarize how the repos fit together as a system.
+
+      Keep the whole response under 30 lines. Do not modify any files in this step — orientation only.
