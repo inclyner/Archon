@@ -176,16 +176,23 @@ describe('pushGroupWorktree', () => {
     setupGroup('feat/x', ['svc-a', 'svc-b']);
     try {
       // Order: phase 1 (push×N), gh auth status pre-flight, phase 2 (per member:
-      // git log + gh pr create + gh pr view --json), phase 3 (cross-link edits).
+      // pickPrTitle = base-branch detect + rev-list + log, then gh pr create
+      // + gh pr view --json), phase 3 (cross-link edits).
       nextResults.push({ ok: true }); // push svc-a
       nextResults.push({ ok: true }); // push svc-b
       nextResults.push({ ok: true }); // gh auth status (pre-flight)
+      // svc-a: rev-parse main (ok), rev-list count = 1, log subject, pr create, pr view
+      nextResults.push({ ok: true }); // rev-parse main svc-a
+      nextResults.push({ ok: true, stdout: '1\n' }); // rev-list --count svc-a
       nextResults.push({ ok: true, stdout: 'feat: add svc-a thing' }); // git log svc-a
       nextResults.push({ ok: true, stdout: 'created PR' }); // gh pr create svc-a
       nextResults.push({
         ok: true,
         stdout: JSON.stringify({ url: 'https://github.com/owner/svc-a/pull/42', number: 42 }),
       }); // gh pr view svc-a
+      // svc-b: same sequence
+      nextResults.push({ ok: true }); // rev-parse main svc-b
+      nextResults.push({ ok: true, stdout: '2\n' }); // rev-list --count svc-b
       nextResults.push({ ok: true, stdout: 'feat: add svc-b thing' }); // git log svc-b
       nextResults.push({ ok: true, stdout: 'created PR' }); // gh pr create svc-b
       nextResults.push({
@@ -225,6 +232,8 @@ describe('pushGroupWorktree', () => {
     try {
       nextResults.push({ ok: true }); // push
       nextResults.push({ ok: true }); // gh auth status
+      nextResults.push({ ok: true }); // rev-parse main
+      nextResults.push({ ok: true, stdout: '1\n' }); // rev-list --count
       nextResults.push({ ok: true, stdout: 'msg' }); // git log
       nextResults.push({ ok: true, stdout: 'created PR' }); // gh pr create
       nextResults.push({
@@ -236,6 +245,33 @@ describe('pushGroupWorktree', () => {
       expect(result.prs).toHaveLength(1);
       // Single PR → no cross-link pass.
       expect(prEditCalls()).toHaveLength(0);
+    } finally {
+      teardown();
+    }
+  });
+
+  it('uses "(no commits)" PR title when the worktree has no new commits', async () => {
+    setupGroup('feat/x', ['svc-a']);
+    try {
+      nextResults.push({ ok: true }); // push svc-a
+      nextResults.push({ ok: true }); // gh auth status
+      nextResults.push({ ok: true }); // rev-parse main → ok
+      nextResults.push({ ok: true, stdout: '0\n' }); // rev-list --count = 0 (no new commits)
+      // No git log call — pickPrTitle short-circuits to the "(no commits)" template
+      nextResults.push({ ok: true, stdout: 'created' }); // gh pr create
+      nextResults.push({
+        ok: true,
+        stdout: JSON.stringify({ url: 'https://github.com/o/svc-a/pull/3', number: 3 }),
+      }); // gh pr view
+
+      await pushGroupWorktree('platform', 'feat/x', { openPrs: true });
+
+      const createCall = prCreateCalls()[0];
+      const titleIdx = createCall ? createCall.args.indexOf('--title') : -1;
+      const title = createCall?.args[titleIdx + 1] ?? '';
+      expect(title).toContain('(no commits)');
+      expect(title).toContain('svc-a');
+      expect(title).toContain('feat/x');
     } finally {
       teardown();
     }
@@ -271,11 +307,17 @@ describe('pushGroupWorktree', () => {
       nextResults.push({ ok: true }); // push svc-a
       nextResults.push({ ok: true }); // push svc-b
       nextResults.push({ ok: true }); // gh auth status
+      // svc-a title pick + create fails
+      nextResults.push({ ok: true }); // rev-parse main svc-a
+      nextResults.push({ ok: true, stdout: '1\n' }); // rev-list svc-a
       nextResults.push({ ok: true, stdout: 'msg' }); // git log svc-a
       nextResults.push({
         ok: false,
         err: Object.assign(new Error('boom'), { stderr: 'rate limited' }),
       }); // pr create svc-a fails
+      // svc-b title pick + create + view
+      nextResults.push({ ok: true }); // rev-parse main svc-b
+      nextResults.push({ ok: true, stdout: '1\n' }); // rev-list svc-b
       nextResults.push({ ok: true, stdout: 'msg' }); // git log svc-b
       nextResults.push({ ok: true, stdout: 'created' }); // pr create svc-b
       nextResults.push({

@@ -128,6 +128,81 @@ function buildBaseBody(groupName: string, branch: string, relativePath: string):
   ].join('\n');
 }
 
+/**
+ * Pick a PR title for one member.
+ *
+ * Prefers the subject of the most recent commit on this branch ABOVE the
+ * detected base branch (i.e. one of the AI session's actual commits). When
+ * the worktree has no new commits — the AI session opened the worktree but
+ * never committed, common for workflows that expect the user to commit
+ * later — we fall back to a template name rather than picking the
+ * pre-branch ancestor commit subject (which would mislead reviewers about
+ * the change's scope).
+ *
+ * Base branch detection mirrors setUpGroupRun's chain: try local 'main',
+ * then 'master'. If neither exists, we can't tell "no new commits" from
+ * "many new commits," so we use the template title.
+ */
+async function pickPrTitle(
+  worktreePath: string,
+  groupName: string,
+  relativePath: string,
+  branch: string
+): Promise<string> {
+  const fallback = `[${groupName}] ${relativePath}: ${branch}`;
+
+  // Detect base branch.
+  let baseBranch: string | null = null;
+  for (const candidate of ['main', 'master']) {
+    try {
+      await execFileAsync(
+        'git',
+        ['-C', worktreePath, 'rev-parse', '--verify', `refs/heads/${candidate}`],
+        { timeout: 10000 }
+      );
+      baseBranch = candidate;
+      break;
+    } catch {
+      // try next
+    }
+  }
+
+  if (!baseBranch) {
+    return fallback;
+  }
+
+  // How many commits on this branch are NOT on the base?
+  let newCommitCount = 0;
+  try {
+    const out = await execFileAsync(
+      'git',
+      ['-C', worktreePath, 'rev-list', '--count', `${baseBranch}..HEAD`],
+      { timeout: 10000 }
+    );
+    newCommitCount = Number(out.stdout.trim());
+    if (!Number.isFinite(newCommitCount)) newCommitCount = 0;
+  } catch (err) {
+    getLog().debug({ err, member: relativePath, baseBranch }, 'group_push.rev_list_failed');
+    return fallback;
+  }
+
+  if (newCommitCount === 0) {
+    return `[${groupName}/${relativePath}] ${branch} (no commits)`;
+  }
+
+  // We have at least one new commit — use its subject.
+  try {
+    const subject = await execFileAsync('git', ['-C', worktreePath, 'log', '-1', '--format=%s'], {
+      timeout: 10000,
+    });
+    const trimmed = subject.stdout.trim();
+    return trimmed ? `[${groupName}/${relativePath}] ${trimmed}` : fallback;
+  } catch (err) {
+    getLog().debug({ err, member: relativePath }, 'group_push.title_fallback_to_default');
+    return fallback;
+  }
+}
+
 function appendSiblingsToBody(baseBody: string, selfRelativePath: string, prs: OpenedPr[]): string {
   const siblings = prs.filter(p => p.relativePath !== selfRelativePath);
   if (siblings.length === 0) return baseBody;
@@ -252,21 +327,7 @@ export async function pushGroupWorktree(
 
   // Phase 2: open a PR per pushed member.
   for (const pushed of result.pushed) {
-    // Pick a title from the most recent commit subject on the worktree's HEAD.
-    let title = `[${groupName}] ${pushed.relativePath}: ${branch}`;
-    try {
-      const subject = await execFileAsync(
-        'git',
-        ['-C', pushed.worktreePath, 'log', '-1', '--format=%s'],
-        { timeout: 10000 }
-      );
-      const trimmed = subject.stdout.trim();
-      if (trimmed) {
-        title = `[${groupName}/${pushed.relativePath}] ${trimmed}`;
-      }
-    } catch (err) {
-      getLog().debug({ err, member: pushed.relativePath }, 'group_push.title_fallback_to_default');
-    }
+    const title = await pickPrTitle(pushed.worktreePath, groupName, pushed.relativePath, branch);
 
     const baseBody = buildBaseBody(groupName, branch, pushed.relativePath);
     try {
