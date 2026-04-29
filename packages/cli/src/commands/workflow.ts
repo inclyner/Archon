@@ -7,7 +7,9 @@ import {
   loadRepoConfig,
   generateAndSetTitle,
   createWorkflowStore,
+  workspaceGroupDb,
 } from '@archon/core';
+import { createGroupWorktree, type GroupWorktreeMember } from '@archon/isolation';
 import { WORKFLOW_EVENT_TYPES, type WorkflowEventType } from '@archon/workflows/store';
 import { configureIsolation, getIsolationProvider } from '@archon/isolation';
 import { createLogger, getArchonHome } from '@archon/paths';
@@ -63,6 +65,12 @@ export interface WorkflowRunOptions {
   noWorktree?: boolean;
   resume?: boolean;
   codebaseId?: string; // Passed by resume/approve to skip path-based lookup
+  /**
+   * Run the workflow against a registered workspace group. cwd will be set to
+   * the group worktree dir (containing one git worktree per member). Mutually
+   * exclusive with branchName / fromBranch / noWorktree / resume.
+   */
+  group?: string;
   quiet?: boolean;
   verbose?: boolean;
   /** Platform conversation ID (e.g. `cli-{ts}-{rand}`), NOT a DB UUID. */
@@ -287,6 +295,23 @@ export async function workflowRunCommand(
     throw new Error(
       `Workflow '${workflowName}' not found.\n\nAvailable workflows:\n${availableWorkflows}`
     );
+  }
+
+  // Group mode: branch off into a separate code path. Mutex with branch/no-worktree/resume
+  // is enforced both here (defense-in-depth) and at the CLI parser layer.
+  if (options.group !== undefined) {
+    if (
+      options.branchName !== undefined ||
+      options.noWorktree ||
+      options.fromBranch !== undefined ||
+      options.resume
+    ) {
+      throw new Error(
+        '--group is mutually exclusive with --branch, --from, --no-worktree, and --resume.\n' +
+          "  --group runs the workflow against a workspace group's pre-built worktree."
+      );
+    }
+    return runWorkflowAgainstGroup(workflow, workflowName, userMessage, options);
   }
 
   // Validate mutually exclusive flags (defensive — cli.ts checks these for UX, but
@@ -743,6 +768,174 @@ export async function workflowRunCommand(
     }
     console.log('\nWorkflow completed successfully.');
   } else {
+    throw new Error(`Workflow failed: ${result.error}`);
+  }
+}
+
+/**
+ * Run a workflow against a registered workspace group.
+ *
+ * Resolves the group's members + their source repo paths from the DB, creates
+ * a fresh group worktree (one git worktree per member, plus a copy of the
+ * parent's non-git files), then invokes the executor with cwd pointing at the
+ * group worktree dir. The executor runs as if it were in a single-repo session
+ * — substitution variables for the group ($GROUP, $GROUP_DIR, $REPOS,
+ * $REPO_<NAME>_DIR) land in a follow-up phase.
+ *
+ * On any failure, the worktree is left on disk for inspection (matches the
+ * existing single-repo failure model).
+ */
+async function runWorkflowAgainstGroup(
+  workflow: ReturnType<typeof resolveWorkflowName> & object,
+  workflowName: string,
+  userMessage: string,
+  options: WorkflowRunOptions
+): Promise<void> {
+  const groupName = options.group;
+  if (!groupName) {
+    throw new Error('runWorkflowAgainstGroup called without options.group');
+  }
+
+  const group = await workspaceGroupDb.getGroupByName(groupName);
+  if (!group) {
+    throw new Error(
+      `No workspace group named "${groupName}". Run \`archon group list\` to see registered groups.`
+    );
+  }
+
+  const memberRows = await workspaceGroupDb.getMembersForGroup(group.id);
+  if (memberRows.length === 0) {
+    throw new Error(
+      `Group "${groupName}" has no members. Re-register with \`archon group register ${group.parent_path}\`.`
+    );
+  }
+
+  // Resolve each member's source repo path via codebases table.
+  const members: GroupWorktreeMember[] = [];
+  for (const m of memberRows) {
+    const cb = await codebaseDb.getCodebase(m.codebase_id);
+    if (!cb) {
+      throw new Error(
+        `Group member references missing codebase ${m.codebase_id} (relative_path="${m.relative_path}").\n` +
+          'The codebase row was likely deleted out from under the group. ' +
+          `Re-register the group with \`archon group register ${group.parent_path}\`.`
+      );
+    }
+    members.push({
+      codebaseId: cb.id,
+      sourceRepoPath: cb.default_cwd,
+      relativePath: m.relative_path,
+    });
+  }
+
+  // Pick a base branch from the FIRST member. Personal-use scope: assumes all
+  // members share a sensible default branch. If detection fails, we fall back
+  // to "main" (creating a branch from a non-existent ref will fail loudly
+  // inside the worktree provider — the user will see a clear error).
+  let baseBranch = 'main';
+  try {
+    baseBranch = await git.getDefaultBranch(git.toRepoPath(members[0].sourceRepoPath));
+  } catch (err) {
+    getLog().warn(
+      { err: err as Error, sourceRepoPath: members[0].sourceRepoPath },
+      'cli.group.base_branch_detect_failed'
+    );
+  }
+
+  // Auto-generate a branch name. Mirrors the single-repo convention.
+  const branch = `${workflowName}-${Date.now()}`;
+
+  console.log(`Running workflow: ${workflowName}`);
+  console.log(`Workspace group: ${groupName} (${memberRows.length} members)`);
+  console.log(`Branch: ${branch} (base: ${baseBranch})`);
+  console.log('');
+
+  const worktree = await createGroupWorktree({
+    groupName: group.name,
+    parentPath: group.parent_path,
+    members,
+    branch,
+    baseBranch,
+  });
+
+  console.log(`Group worktree: ${worktree.groupDir}`);
+  for (const m of members) {
+    console.log(`  ${m.relativePath} → ${worktree.memberDirs[m.codebaseId] ?? '(missing)'}`);
+  }
+  console.log('');
+
+  // Standard CLI plumbing: adapter, conversation, event subscription.
+  const adapter = new CLIAdapter();
+  const conversationId = options.conversationId ?? generateConversationId();
+
+  let conversation;
+  try {
+    conversation = await conversationDb.getOrCreateConversation('cli', conversationId);
+  } catch (error) {
+    const err = error as Error;
+    throw new Error(
+      `Failed to access database: ${err.message}\nHint: Check that DATABASE_URL is set and the database is running.`
+    );
+  }
+
+  const { quiet, verbose } = options;
+  const unsubscribe = quiet
+    ? undefined
+    : getWorkflowEventEmitter().subscribeForConversation(conversationId, event => {
+        renderWorkflowEvent(event, verbose ?? false);
+      });
+
+  try {
+    await adapter.sendMessage(conversationId, `Dispatching workflow: **${workflow.name}**`, {
+      category: 'workflow_dispatch_status',
+      segment: 'new',
+      workflowDispatch: { workerConversationId: conversationId, workflowName: workflow.name },
+    });
+  } catch (dispatchError) {
+    getLog().warn(
+      { err: dispatchError as Error, conversationId },
+      'cli.workflow_dispatch_surface_failed'
+    );
+  }
+
+  let result: Awaited<ReturnType<typeof executeWorkflow>>;
+  try {
+    result = await executeWorkflow(
+      createWorkflowDeps(),
+      adapter,
+      conversationId,
+      worktree.groupDir,
+      workflow,
+      userMessage,
+      conversation.id
+      // No codebaseId for group runs — the executor accepts undefined; per-codebase
+      // env vars and isolation env tracking don't apply at group scope.
+    );
+  } finally {
+    unsubscribe?.();
+  }
+
+  if (result.success && 'paused' in result && result.paused) {
+    console.log('\nWorkflow paused — waiting for approval.');
+  } else if (result.success) {
+    if ('summary' in result && result.summary) {
+      try {
+        await adapter.sendMessage(conversationId, result.summary, {
+          category: 'workflow_result',
+          segment: 'new',
+          workflowResult: { workflowName: workflow.name, runId: result.workflowRunId },
+        });
+      } catch (surfaceError) {
+        getLog().warn(
+          { err: surfaceError as Error, conversationId },
+          'cli.workflow_result_surface_failed'
+        );
+      }
+    }
+    console.log('\nWorkflow completed successfully.');
+    console.log(`Worktree left in place at ${worktree.groupDir} for inspection.`);
+  } else {
+    console.log(`Worktree left in place at ${worktree.groupDir} for inspection.`);
     throw new Error(`Workflow failed: ${result.error}`);
   }
 }

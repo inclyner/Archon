@@ -134,6 +134,7 @@ Options:
   --port <port>              Override server port for 'serve' (default: 3090)
   --download-only            Download web UI without starting the server
   --name <name>              Override group name for 'group register' (default: parent dirname)
+  --group <name>             Run a workflow against a registered workspace group
 
 Examples:
   archon chat "What does the orchestrator do?"
@@ -142,6 +143,7 @@ Examples:
   archon workflow run plan --cwd /path/to/repo "Add dark mode"
   archon workflow run implement --branch feature-auth "Implement auth"
   archon workflow run quick-fix --no-worktree "Fix typo"
+  archon workflow run assist --group my-platform "Add OAuth across all 4 repos"
   archon continue fix/issue-42 --workflow archon-smart-pr-review "Review the changes"
 `);
 }
@@ -216,6 +218,7 @@ async function main(): Promise<number> {
         scope: { type: 'string' },
         force: { type: 'boolean' },
         name: { type: 'string' },
+        group: { type: 'string' },
       },
       allowPositionals: true,
       strict: false, // Allow unknown flags to pass through
@@ -249,7 +252,13 @@ async function main(): Promise<number> {
 
   // Commands that don't require git repo validation
   const noGitCommands = ['version', 'help', 'setup', 'chat', 'continue', 'serve', 'group'];
-  const requiresGitRepo = !noGitCommands.includes(command ?? '');
+  // `workflow run --group <name>` runs from a workspace-group dir (non-git parent
+  // with N git child worktrees), so skip the git-repo precheck in that case —
+  // the workflow run command resolves cwd from the group instead.
+  const groupOpt = values.group as string | undefined;
+  const isWorkflowRunGroup =
+    command === 'workflow' && subcommand === 'run' && groupOpt !== undefined;
+  const requiresGitRepo = !noGitCommands.includes(command ?? '') && !isWorkflowRunGroup;
 
   try {
     // Set log level from flags (quiet > verbose > default)
@@ -364,11 +373,26 @@ async function main(): Promise<number> {
               );
               return 1;
             }
+            if (groupOpt !== undefined) {
+              if (
+                branchName !== undefined ||
+                noWorktree ||
+                fromBranch !== undefined ||
+                resumeFlag
+              ) {
+                console.error(
+                  'Error: --group is mutually exclusive with --branch, --from, --no-worktree, and --resume.\n' +
+                    "  --group runs the workflow against a workspace group's pre-built worktree."
+                );
+                return 1;
+              }
+            }
             const options = {
               branchName,
               fromBranch,
               noWorktree,
               resume: resumeFlag,
+              group: groupOpt,
               quiet: values.quiet as boolean | undefined,
               verbose: values.verbose as boolean | undefined,
             };
