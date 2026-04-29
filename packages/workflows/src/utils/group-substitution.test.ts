@@ -77,6 +77,25 @@ describe('applyGroupSubstitutions', () => {
     const out = applyGroupSubstitutions('$GROUP_DIR/foo and $GROUP_DIR/bar', ctx);
     expect(out).toBe('/abs/group/foo and /abs/group/bar');
   });
+
+  it('does not match $REPO_<NAME>_DIR as a prefix of a longer identifier', () => {
+    // $REPO_SERVICE_API_DIRECTORY happens to start with our pattern but is a
+    // different identifier. The regex must not eat it (which previously left
+    // behind "ECTORY" in the output).
+    const out = applyGroupSubstitutions('cd $REPO_SERVICE_API_DIRECTORY/sub', ctx);
+    expect(out).toBe('cd $REPO_SERVICE_API_DIRECTORY/sub');
+  });
+
+  it('does not match $REPO_<NAME>_DIR_FOO as a prefix', () => {
+    const out = applyGroupSubstitutions('use $REPO_SERVICE_API_DIR_FOO here', ctx);
+    expect(out).toBe('use $REPO_SERVICE_API_DIR_FOO here');
+  });
+
+  it('still strips truly-unknown $REPO_X_DIR even with the lookahead', () => {
+    // Followed by space → not part of a longer identifier → still substituted.
+    const out = applyGroupSubstitutions('cd $REPO_DOES_NOT_EXIST_DIR something', ctx);
+    expect(out).toBe('cd  something');
+  });
 });
 
 describe('applyGroupSubstitutionsToWorkflow', () => {

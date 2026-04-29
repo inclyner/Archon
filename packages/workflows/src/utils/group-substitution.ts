@@ -47,7 +47,7 @@ export function sanitizeRepoVarSuffix(relativePath: string): string {
 export function applyGroupSubstitutions(text: string, ctx?: GroupSubstitutionContext): string {
   if (!ctx) {
     return text
-      .replace(/\$REPO_[A-Z0-9_]+_DIR/g, '')
+      .replace(/\$REPO_[A-Z0-9_]+_DIR(?![A-Z0-9_])/g, '')
       .replace(/\$GROUP_DIR/g, '')
       .replace(/\$REPOS/g, '')
       .replace(/\$GROUP\b/g, '');
@@ -55,14 +55,16 @@ export function applyGroupSubstitutions(text: string, ctx?: GroupSubstitutionCon
 
   let result = text;
 
-  // Per-member: $REPO_<NAME>_DIR → absolute member dir
+  // Per-member: $REPO_<NAME>_DIR → absolute member dir.
+  // Negative lookahead prevents matching identifier prefixes like
+  // $REPO_FOO_DIRECTORY (which would otherwise leave behind "ECTORY").
   for (const member of ctx.members) {
     const suffix = sanitizeRepoVarSuffix(member.relativePath);
-    const pattern = new RegExp(`\\$REPO_${suffix}_DIR`, 'g');
+    const pattern = new RegExp(`\\$REPO_${suffix}_DIR(?![A-Z0-9_])`, 'g');
     result = result.replace(pattern, member.memberDir);
   }
   // Any remaining $REPO_*_DIR references match no member → empty string.
-  result = result.replace(/\$REPO_[A-Z0-9_]+_DIR/g, '');
+  result = result.replace(/\$REPO_[A-Z0-9_]+_DIR(?![A-Z0-9_])/g, '');
 
   result = result
     .replace(/\$GROUP_DIR/g, ctx.groupDir)
