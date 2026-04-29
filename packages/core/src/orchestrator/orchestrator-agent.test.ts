@@ -129,6 +129,42 @@ mock.module('../workflows/store-adapter', () => ({
   createWorkflowDeps: mock(() => ({})),
 }));
 
+const mockSetUpGroupRun = mock(() =>
+  Promise.resolve({
+    group: {
+      id: 'group-1',
+      name: 'platform',
+      parent_path: '/dev/platform',
+      created_at: new Date(),
+    },
+    members: [
+      { codebaseId: 'cb-a', sourceRepoPath: '/src/a', relativePath: 'svc-a' },
+      { codebaseId: 'cb-b', sourceRepoPath: '/src/b', relativePath: 'svc-b' },
+    ],
+    branch: 'feat-1234567890',
+    baseBranch: 'main',
+    worktree: {
+      groupDir: '/wt/platform/feat-1234567890',
+      memberDirs: {
+        'cb-a': '/wt/platform/feat-1234567890/svc-a',
+        'cb-b': '/wt/platform/feat-1234567890/svc-b',
+      },
+    },
+    groupContext: {
+      groupName: 'platform',
+      groupDir: '/wt/platform/feat-1234567890',
+      members: [
+        { relativePath: 'svc-a', memberDir: '/wt/platform/feat-1234567890/svc-a' },
+        { relativePath: 'svc-b', memberDir: '/wt/platform/feat-1234567890/svc-b' },
+      ],
+    },
+    resolvedWorkflow: makeTestWorkflow({ name: 'orient' }),
+  })
+);
+mock.module('../workflows/group-run', () => ({
+  setUpGroupRun: mockSetUpGroupRun,
+}));
+
 const mockGetPausedWorkflowRun = mock(() => Promise.resolve(null as unknown));
 const mockFindResumableRunByParentConversation = mock(() => Promise.resolve(null as unknown));
 mock.module('../db/workflows', () => ({
@@ -1600,5 +1636,83 @@ describe('handleMessage — workflow context injection', () => {
 
     // Non-critical path — must not block message handling
     await expect(handleMessage(platform, 'conv-1', 'Hello')).resolves.toBeUndefined();
+  });
+});
+
+// ─── Group workflow dispatch ──────────────────────────────────────────────────
+describe('handleMessage — /workflow run --group dispatch', () => {
+  beforeEach(() => {
+    mockParseCommand.mockReset();
+    mockHandleCommand.mockReset();
+    mockGetOrCreateConversation.mockReset();
+    mockExecuteWorkflow.mockReset();
+    mockSetUpGroupRun.mockClear();
+  });
+
+  test('routes to handleGroupWorkflowRunCommand and calls executeWorkflow with the group cwd', async () => {
+    const conversation = makeConversation({ codebase_id: null });
+    mockGetOrCreateConversation.mockReturnValueOnce(Promise.resolve(conversation));
+    // parseCommand returns {command:'workflow', args:[...]} so the orchestrator
+    // takes the deterministic-command branch.
+    mockParseCommand.mockReturnValue({
+      command: 'workflow',
+      args: ['run', 'orient', '--group', 'platform', 'do the thing'],
+    });
+    // handleCommand returns a workflow result with a group set, which triggers
+    // the group dispatcher path we added in 54037cb0.
+    const definition = makeTestWorkflow({ name: 'orient' });
+    mockHandleCommand.mockResolvedValueOnce({
+      success: true,
+      message: 'Starting workflow `orient` against group `platform`',
+      workflow: { definition, args: 'do the thing', group: 'platform' },
+    });
+
+    const platform = makePlatform();
+    await handleMessage(platform, 'conv-1', '/workflow run orient --group platform "do the thing"');
+
+    // Group setup ran with the workflow + group from the parsed command.
+    expect(mockSetUpGroupRun).toHaveBeenCalledTimes(1);
+    const setupArgs = mockSetUpGroupRun.mock.calls[0]![0] as {
+      groupName: string;
+      workflowName: string;
+    };
+    expect(setupArgs.groupName).toBe('platform');
+    expect(setupArgs.workflowName).toBe('orient');
+
+    // executeWorkflow was called with cwd = the group dir from the setup mock,
+    // and with the resolvedWorkflow (group-substituted) — not the raw definition.
+    expect(mockExecuteWorkflow).toHaveBeenCalledTimes(1);
+    const execArgs = mockExecuteWorkflow.mock.calls[0]!;
+    // executor signature: (deps, platform, conversationId, cwd, workflow, userMessage, conversationDbId, ...)
+    expect(execArgs[3]).toBe('/wt/platform/feat-1234567890');
+    const passedWorkflow = execArgs[4] as { name: string };
+    expect(passedWorkflow.name).toBe('orient');
+    expect(execArgs[5]).toBe('do the thing');
+  });
+
+  test('surfaces a friendly error when setUpGroupRun throws (e.g. unknown group)', async () => {
+    const conversation = makeConversation({ codebase_id: null });
+    mockGetOrCreateConversation.mockReturnValueOnce(Promise.resolve(conversation));
+    mockParseCommand.mockReturnValue({
+      command: 'workflow',
+      args: ['run', 'orient', '--group', 'nope', ''],
+    });
+    const definition = makeTestWorkflow({ name: 'orient' });
+    mockHandleCommand.mockResolvedValueOnce({
+      success: true,
+      message: 'Starting workflow `orient` against group `nope`',
+      workflow: { definition, args: '', group: 'nope' },
+    });
+    mockSetUpGroupRun.mockRejectedValueOnce(new Error('No workspace group named "nope".'));
+
+    const platform = makePlatform();
+    await handleMessage(platform, 'conv-1', '/workflow run orient --group nope ""');
+
+    // executeWorkflow must NOT be called when setup fails.
+    expect(mockExecuteWorkflow).not.toHaveBeenCalled();
+    // The user-facing platform got an error message naming the group.
+    const sendCalls = (platform.sendMessage as ReturnType<typeof mock>).mock.calls;
+    const errorMessages = sendCalls.map(c => String(c[1]));
+    expect(errorMessages.some(m => m.includes('Failed to set up group run for "nope"'))).toBe(true);
   });
 });
