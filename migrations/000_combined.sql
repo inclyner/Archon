@@ -312,3 +312,21 @@ ALTER TABLE remote_agent_sessions
 -- From migration 021: allow_env_keys on codebases
 ALTER TABLE remote_agent_codebases
   ADD COLUMN IF NOT EXISTS allow_env_keys BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- From migration 022: workspace groups (cross-repo workflow runs)
+CREATE TABLE IF NOT EXISTS remote_agent_workspace_groups (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name         TEXT NOT NULL UNIQUE,
+  parent_path  TEXT NOT NULL,
+  created_at   TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS remote_agent_workspace_group_members (
+  group_id      UUID NOT NULL REFERENCES remote_agent_workspace_groups(id) ON DELETE CASCADE,
+  codebase_id   UUID NOT NULL REFERENCES remote_agent_codebases(id) ON DELETE CASCADE,
+  relative_path TEXT NOT NULL,
+  PRIMARY KEY (group_id, codebase_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_workspace_group_members_codebase
+  ON remote_agent_workspace_group_members(codebase_id);
