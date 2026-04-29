@@ -7,13 +7,26 @@
  * mounted as a git worktree underneath.
  */
 import { pool } from './connection';
+import type { QueryResult } from './adapters/types';
 import type { WorkspaceGroup, WorkspaceGroupMember } from '../types';
 
-export async function createGroup(data: {
-  name: string;
-  parent_path: string;
-}): Promise<WorkspaceGroup> {
-  const result = await pool.query<WorkspaceGroup>(
+/**
+ * Query callable signature shared by `pool.query` and the per-call function
+ * passed to `withTransaction`. Each helper below accepts one of these via the
+ * trailing `query` arg so it can run either standalone (default = pool.query)
+ * or inside a withTransaction block (caller passes the transactional query).
+ *
+ * Why optional rather than required: the standalone callers vastly outnumber
+ * the transactional ones, and the existing test suite mocks `pool.query` —
+ * keeping it as the default keeps those tests untouched.
+ */
+type QueryFn = <T>(sql: string, params?: unknown[]) => Promise<QueryResult<T>>;
+
+export async function createGroup(
+  data: { name: string; parent_path: string },
+  query: QueryFn = pool.query
+): Promise<WorkspaceGroup> {
+  const result = await query<WorkspaceGroup>(
     'INSERT INTO remote_agent_workspace_groups (name, parent_path) VALUES ($1, $2) RETURNING *',
     [data.name, data.parent_path]
   );
@@ -51,12 +64,11 @@ export async function removeGroup(id: string): Promise<void> {
   await pool.query('DELETE FROM remote_agent_workspace_groups WHERE id = $1', [id]);
 }
 
-export async function addMember(data: {
-  group_id: string;
-  codebase_id: string;
-  relative_path: string;
-}): Promise<WorkspaceGroupMember> {
-  const result = await pool.query<WorkspaceGroupMember>(
+export async function addMember(
+  data: { group_id: string; codebase_id: string; relative_path: string },
+  query: QueryFn = pool.query
+): Promise<WorkspaceGroupMember> {
+  const result = await query<WorkspaceGroupMember>(
     `INSERT INTO remote_agent_workspace_group_members (group_id, codebase_id, relative_path)
      VALUES ($1, $2, $3) RETURNING *`,
     [data.group_id, data.codebase_id, data.relative_path]

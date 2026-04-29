@@ -78,6 +78,15 @@ mock.module('@archon/core', () => ({
   loadConfig: mock(async () => ({})),
   cloneRepository: mock(async () => ({ codebaseId: 'x', alreadyExisted: false })),
   registerRepository: mockRegisterRepository,
+  // Stand-in for pool.withTransaction: just calls the inner fn with a fake
+  // query function that delegates to whatever the workspaceGroupDb mocks return.
+  // The shape of the inner query doesn't matter to the test — workspaceGroupDb
+  // is mocked separately and ignores the second arg.
+  pool: {
+    withTransaction: <T>(
+      fn: (q: <U>(sql: string, params?: unknown[]) => Promise<{ rows: U[] }>) => Promise<T>
+    ): Promise<T> => fn(async () => ({ rows: [] })),
+  },
   ConversationNotFoundError: class extends Error {},
   getArchonWorkspacesPath: () => '/tmp/.archon/workspaces',
   generateAndSetTitle: mock(async () => {}),

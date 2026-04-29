@@ -110,6 +110,17 @@ export const pool = {
   query: async <T>(sql: string, params?: unknown[]): Promise<QueryResult<T>> => {
     return getDatabase().query<T>(sql, params);
   },
+  /**
+   * Run `fn` inside a BEGIN/COMMIT block. Rolls back if `fn` throws.
+   * Forwards to the active adapter's withTransaction; the inner `query`
+   * argument runs against the same connection so callers can issue
+   * statements as if there were no transaction wrapper.
+   */
+  withTransaction: async <T>(
+    fn: (query: <U>(sql: string, params?: unknown[]) => Promise<QueryResult<U>>) => Promise<T>
+  ): Promise<T> => {
+    return getDatabase().withTransaction(fn);
+  },
   end: async (): Promise<void> => {
     await closeDatabase();
   },

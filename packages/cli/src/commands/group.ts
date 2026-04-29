@@ -13,6 +13,7 @@ import {
   workspaceGroupDb,
   registerRepository,
   codebaseDb,
+  pool,
   type RegisterResult,
 } from '@archon/core';
 import type { WorkspaceGroupMember } from '@archon/core';
@@ -108,19 +109,30 @@ export async function groupRegisterCommand(
     return 1;
   }
 
-  const group = await workspaceGroupDb.createGroup({
-    name: groupName,
-    parent_path: parentPath,
+  // Atomically create the group + member rows. If anything inside the loop
+  // throws (e.g. the user kills the process, or a constraint trips), the
+  // transaction rolls back so we never leave a half-registered group.
+  // Note: registerRepository earlier in this function is intentionally NOT
+  // inside the transaction — those codebase rows are independent values that
+  // we want to keep even if group creation fails.
+  await pool.withTransaction(async query => {
+    const created = await workspaceGroupDb.createGroup(
+      { name: groupName, parent_path: parentPath },
+      query
+    );
+    for (const outcome of successes) {
+      if (!outcome.result) continue;
+      await workspaceGroupDb.addMember(
+        {
+          group_id: created.id,
+          codebase_id: outcome.result.codebaseId,
+          relative_path: outcome.relativePath,
+        },
+        query
+      );
+    }
+    return created;
   });
-
-  for (const outcome of successes) {
-    if (!outcome.result) continue;
-    await workspaceGroupDb.addMember({
-      group_id: group.id,
-      codebase_id: outcome.result.codebaseId,
-      relative_path: outcome.relativePath,
-    });
-  }
 
   console.log(`Group "${groupName}" registered at ${parentPath}`);
   for (const outcome of outcomes) {

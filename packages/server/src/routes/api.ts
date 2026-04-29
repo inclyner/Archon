@@ -28,6 +28,7 @@ import {
   ConversationNotFoundError,
   generateAndSetTitle,
   setUpGroupRun,
+  pool,
 } from '@archon/core';
 import { createWorkflowDeps } from '@archon/core/workflows/store-adapter';
 import { resolveWorkflowName } from '@archon/workflows/router';
@@ -1971,20 +1972,28 @@ export function registerApiRoutes(
         return apiError(c, 400, 'Failed to register any child repos.');
       }
 
-      const group = await workspaceGroupDb.createGroup({
-        name: groupName,
-        parent_path: parentPath,
+      // Atomic: createGroup + addMember loop in a single transaction so a
+      // mid-loop failure doesn't leave a half-registered group.
+      const { group, members } = await pool.withTransaction(async query => {
+        const created = await workspaceGroupDb.createGroup(
+          { name: groupName, parent_path: parentPath },
+          query
+        );
+        const out: { group_id: string; codebase_id: string; relative_path: string }[] = [];
+        for (const s of successes) {
+          if (!s.codebaseId) continue;
+          const m = await workspaceGroupDb.addMember(
+            {
+              group_id: created.id,
+              codebase_id: s.codebaseId,
+              relative_path: s.relativePath,
+            },
+            query
+          );
+          out.push(m);
+        }
+        return { group: created, members: out };
       });
-      const members: { group_id: string; codebase_id: string; relative_path: string }[] = [];
-      for (const s of successes) {
-        if (!s.codebaseId) continue;
-        const m = await workspaceGroupDb.addMember({
-          group_id: group.id,
-          codebase_id: s.codebaseId,
-          relative_path: s.relativePath,
-        });
-        members.push(m);
-      }
 
       return c.json(
         {
