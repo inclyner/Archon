@@ -276,10 +276,18 @@ export async function registerWorkspaceGroup(input: {
   });
 }
 
-export async function deleteWorkspaceGroup(name: string): Promise<{ success: boolean }> {
-  return fetchJSON<{ success: boolean }>(`/api/groups/${encodeURIComponent(name)}`, {
-    method: 'DELETE',
-  });
+export async function deleteWorkspaceGroup(
+  name: string,
+  options: { withWorktrees?: boolean; discardUncommitted?: boolean } = {}
+): Promise<{ success: boolean }> {
+  const params = new URLSearchParams();
+  if (options.withWorktrees) params.set('withWorktrees', 'true');
+  if (options.discardUncommitted) params.set('discardUncommitted', 'true');
+  const qs = params.toString();
+  return fetchJSON<{ success: boolean }>(
+    `/api/groups/${encodeURIComponent(name)}${qs ? `?${qs}` : ''}`,
+    { method: 'DELETE' }
+  );
 }
 
 export async function listWorkspaceGroupWorktrees(

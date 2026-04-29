@@ -425,6 +425,9 @@ describe('DELETE /api/groups/:name', () => {
   beforeEach(() => {
     mockGetGroupByName.mockClear();
     mockRemoveGroup.mockClear();
+    mockListGroupWorktrees.mockClear();
+    mockRemoveGroupWorktree.mockClear();
+    mockListGroupWorktrees.mockImplementation(async () => []);
   });
 
   test('404 when group not found', async () => {
@@ -435,7 +438,7 @@ describe('DELETE /api/groups/:name', () => {
     expect(mockRemoveGroup).not.toHaveBeenCalled();
   });
 
-  test('200 when group removed', async () => {
+  test('200 when no worktrees exist', async () => {
     mockGetGroupByName.mockImplementation(async () => ({
       id: 'g1',
       name: 'platform',
@@ -445,6 +448,44 @@ describe('DELETE /api/groups/:name', () => {
     const app = makeApp();
     const res = await app.request('/api/groups/platform', { method: 'DELETE' });
     expect(res.status).toBe(200);
+    expect(mockRemoveGroup).toHaveBeenCalledWith('g1');
+  });
+
+  test('422 when worktrees exist and ?withWorktrees is not set', async () => {
+    mockGetGroupByName.mockImplementation(async () => ({
+      id: 'g1',
+      name: 'platform',
+      parent_path: '/dev/p',
+      created_at: new Date(),
+    }));
+    mockListGroupWorktrees.mockImplementation(async () => [
+      { groupName: 'platform', branch: 'feat/x', path: '/p/x' },
+    ]);
+    const app = makeApp();
+    const res = await app.request('/api/groups/platform', { method: 'DELETE' });
+    expect(res.status).toBe(422);
+    expect(mockRemoveGroup).not.toHaveBeenCalled();
+  });
+
+  test('200 with ?withWorktrees=true cascades cleanup', async () => {
+    mockGetGroupByName.mockImplementation(async () => ({
+      id: 'g1',
+      name: 'platform',
+      parent_path: '/dev/p',
+      created_at: new Date(),
+    }));
+    mockListGroupWorktrees.mockImplementation(async () => [
+      { groupName: 'platform', branch: 'feat/x', path: '/p/x' },
+    ]);
+    mockGetMembersForGroup.mockImplementation(async () => [
+      { group_id: 'g1', codebase_id: 'cb-a', relative_path: 'svc-a' },
+    ]);
+    const app = makeApp();
+    const res = await app.request('/api/groups/platform?withWorktrees=true', {
+      method: 'DELETE',
+    });
+    expect(res.status).toBe(200);
+    expect(mockRemoveGroupWorktree).toHaveBeenCalledTimes(1);
     expect(mockRemoveGroup).toHaveBeenCalledWith('g1');
   });
 });

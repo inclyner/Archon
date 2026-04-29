@@ -346,8 +346,47 @@ describe('groupRemoveCommand', () => {
         created_at: new Date(),
       })
     );
+    mockListGroupWorktrees.mockImplementationOnce(() => Promise.resolve([]));
     const code = await groupRemoveCommand('platform');
     expect(code).toBe(0);
+    expect(mockRemoveGroup).toHaveBeenCalledWith('g1');
+  });
+
+  it('refuses to remove when worktrees still exist on disk', async () => {
+    mockGetGroupByName.mockImplementationOnce(() =>
+      Promise.resolve({
+        id: 'g1',
+        name: 'platform',
+        parent_path: '/dev/p',
+        created_at: new Date(),
+      })
+    );
+    mockListGroupWorktrees.mockImplementationOnce(() =>
+      Promise.resolve([{ groupName: 'platform', branch: 'feat/x', path: '/p/x' }])
+    );
+    const code = await groupRemoveCommand('platform');
+    expect(code).toBe(1);
+    expect(mockRemoveGroup).not.toHaveBeenCalled();
+  });
+
+  it('cascades cleanup with --with-worktrees', async () => {
+    mockGetGroupByName.mockImplementationOnce(() =>
+      Promise.resolve({
+        id: 'g1',
+        name: 'platform',
+        parent_path: '/dev/p',
+        created_at: new Date(),
+      })
+    );
+    mockGetMembersForGroup.mockImplementationOnce(() =>
+      Promise.resolve([{ group_id: 'g1', codebase_id: 'cb-a', relative_path: 'svc-a' }])
+    );
+    mockListGroupWorktrees.mockImplementationOnce(() =>
+      Promise.resolve([{ groupName: 'platform', branch: 'feat/x', path: '/p/x' }])
+    );
+    const code = await groupRemoveCommand('platform', { withWorktrees: true });
+    expect(code).toBe(0);
+    expect(mockRemoveGroupWorktree).toHaveBeenCalledTimes(1);
     expect(mockRemoveGroup).toHaveBeenCalledWith('g1');
   });
 });

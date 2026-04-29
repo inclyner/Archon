@@ -211,13 +211,56 @@ export async function groupShowCommand(name: string, jsonOutput?: boolean): Prom
 }
 
 /**
- * `archon group remove <name>` — drops group + member junction; codebases preserved.
+ * `archon group remove <name> [--with-worktrees] [--discard-uncommitted]` —
+ * drops group + member junction; codebases preserved.
+ *
+ * Refuses by default if any group worktrees exist on disk, since dropping
+ * the group row leaves dangling pointers in each source repo's
+ * `.git/worktrees/` and the user has no way to find them via `archon group
+ * cleanup` afterward (the group is gone). Pass `--with-worktrees` to cascade
+ * into a cleanup of every existing worktree first.
  */
-export async function groupRemoveCommand(name: string): Promise<number> {
+export async function groupRemoveCommand(
+  name: string,
+  options: { withWorktrees?: boolean; discardUncommitted?: boolean } = {}
+): Promise<number> {
   const group = await workspaceGroupDb.getGroupByName(name);
   if (!group) {
     console.error(`Error: no group named "${name}".`);
     return 1;
+  }
+
+  const allWorktrees = await listGroupWorktrees();
+  const groupWorktrees = allWorktrees.filter(w => w.groupName === name);
+
+  if (groupWorktrees.length > 0 && !options.withWorktrees) {
+    console.error(
+      `Error: ${groupWorktrees.length} worktree(s) still on disk for group "${name}".\n` +
+        '  Run `archon group cleanup ' +
+        name +
+        ' --all --force` first, or pass --with-worktrees to clean them up as part of remove.'
+    );
+    for (const w of groupWorktrees) {
+      console.error(`    ${w.branch}  ${w.path}`);
+    }
+    return 1;
+  }
+
+  if (groupWorktrees.length > 0) {
+    // Cascade cleanup. Resolve members for proper `git worktree remove` calls.
+    const memberPaths = await resolveGroupMembersForRemoval(group.id);
+    for (const w of groupWorktrees) {
+      try {
+        await removeGroupWorktree(name, w.branch, memberPaths ?? undefined, {
+          force: options.discardUncommitted ?? false,
+        });
+        console.log(`  ✓ removed worktree ${w.branch}`);
+      } catch (err) {
+        const e = err as Error;
+        console.error(`  ✗ failed to remove worktree ${w.branch}: ${e.message}`);
+        return 1;
+      }
+    }
   }
 
   await workspaceGroupDb.removeGroup(group.id);

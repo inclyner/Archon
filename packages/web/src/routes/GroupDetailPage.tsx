@@ -41,12 +41,22 @@ export function GroupDetailPage(): React.ReactElement {
   });
 
   const removeMutation = useMutation({
-    mutationFn: () => deleteWorkspaceGroup(groupName),
+    mutationFn: (input: { withWorktrees?: boolean; discardUncommitted?: boolean } = {}) =>
+      deleteWorkspaceGroup(groupName, input),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['workspace-groups'] });
+      void queryClient.invalidateQueries({ queryKey: ['workspace-group-worktrees', groupName] });
       navigate('/groups');
     },
   });
+
+  // Surface the 422 "worktrees still exist" error with a one-click retry
+  // option that cascades the cleanup. Detect the error by matching the
+  // server's "still on disk" phrase — gracefully retries other 422s with
+  // the original message visible.
+  const removeErrorIsWorktreeBlocker = Boolean(
+    removeMutation.error?.message.includes('still on disk')
+  );
 
   if (query.isLoading) {
     return (
@@ -210,8 +220,21 @@ export function GroupDetailPage(): React.ReactElement {
                     </AlertDialogDescription>
                   </AlertDialogHeader>
                   {removeMutation.isError && (
-                    <div className="rounded-md border border-error/40 bg-error/5 px-3 py-2 text-xs text-error">
-                      {removeMutation.error.message}
+                    <div className="space-y-2 rounded-md border border-error/40 bg-error/5 px-3 py-2 text-xs text-error">
+                      <div>{removeMutation.error.message}</div>
+                      {removeErrorIsWorktreeBlocker && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="text-error"
+                          onClick={() => {
+                            removeMutation.mutate({ withWorktrees: true });
+                          }}
+                          disabled={removeMutation.isPending}
+                        >
+                          Remove with worktrees
+                        </Button>
+                      )}
                     </div>
                   )}
                   <AlertDialogFooter>
@@ -219,7 +242,7 @@ export function GroupDetailPage(): React.ReactElement {
                     <AlertDialogAction
                       onClick={e => {
                         e.preventDefault();
-                        removeMutation.mutate();
+                        removeMutation.mutate({});
                       }}
                       disabled={removeMutation.isPending}
                     >

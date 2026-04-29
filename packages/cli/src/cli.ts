@@ -112,7 +112,7 @@ Commands:
   group register <path>      Register a non-git parent dir as a workspace group
   group list                 List all workspace groups
   group show <name>          Show a group's parent path and member repos
-  group remove <name>        Unregister a group (member codebases preserved)
+  group remove <name>        Unregister a group (refuses if worktrees exist; --with-worktrees cascades cleanup)
   group push <name>          Push each member's branch (--branch <name>); add --pr to open PRs
   group cleanup <name>       Remove group worktrees (--branch X | --all | default >7d; requires --force, add --discard-uncommitted to drop uncommitted work)
   continue <branch> [msg]    Continue work on an existing worktree with prior context
@@ -143,6 +143,7 @@ Options:
   --dry-run                  Print planned actions without executing them
   --auto-pr                  After a successful --group run, push each child branch and open PRs
   --discard-uncommitted      Pass to 'group cleanup --force' to drop uncommitted edits in worktrees
+  --with-worktrees           Cascade worktree cleanup when running 'group remove'
 
 Examples:
   archon chat "What does the orchestrator do?"
@@ -233,6 +234,7 @@ async function main(): Promise<number> {
         'dry-run': { type: 'boolean' },
         'auto-pr': { type: 'boolean' },
         'discard-uncommitted': { type: 'boolean' },
+        'with-worktrees': { type: 'boolean' },
       },
       allowPositionals: true,
       strict: false, // Allow unknown flags to pass through
@@ -565,10 +567,15 @@ async function main(): Promise<number> {
           case 'remove': {
             const removeName = positionals[2];
             if (!removeName) {
-              console.error('Usage: archon group remove <name>');
+              console.error(
+                'Usage: archon group remove <name> [--with-worktrees] [--discard-uncommitted]'
+              );
               return 1;
             }
-            return await groupRemoveCommand(removeName);
+            return await groupRemoveCommand(removeName, {
+              withWorktrees: values['with-worktrees'] as boolean | undefined,
+              discardUncommitted: values['discard-uncommitted'] as boolean | undefined,
+            });
           }
 
           case 'push': {

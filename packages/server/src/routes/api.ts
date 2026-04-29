@@ -2015,12 +2015,54 @@ export function registerApiRoutes(
     }
   });
 
-  // DELETE /api/groups/:name - Unregister (codebases preserved)
+  // DELETE /api/groups/:name - Unregister (codebases preserved).
+  // Refuses with 409 when worktrees still exist on disk unless
+  // ?withWorktrees=true is passed (cascades the cleanup first).
   registerOpenApiRoute(deleteGroupRoute, async c => {
     const name = c.req.param('name') ?? '';
+    const withWorktrees = c.req.query('withWorktrees') === 'true';
+    const discardUncommitted = c.req.query('discardUncommitted') === 'true';
     try {
       const group = await workspaceGroupDb.getGroupByName(name);
       if (!group) return apiError(c, 404, 'Group not found');
+
+      const allWorktrees = await listGroupWorktrees();
+      const groupWorktrees = allWorktrees.filter(
+        (w: { groupName: string }) => w.groupName === name
+      );
+
+      if (groupWorktrees.length > 0 && !withWorktrees) {
+        // 422 used here as the closest available "preconditions not met" code
+        // — the apiError signature doesn't admit 409, and the set is fixed by
+        // the route's response schema. Semantically this is "request can't be
+        // satisfied without a side effect (?withWorktrees=true)."
+        return apiError(
+          c,
+          422,
+          `${groupWorktrees.length} worktree(s) still on disk for "${name}". Pass ?withWorktrees=true to cascade cleanup, or remove them first.`
+        );
+      }
+
+      if (groupWorktrees.length > 0) {
+        // Resolve member source-repo paths for proper git worktree remove.
+        const memberRows = await workspaceGroupDb.getMembersForGroup(group.id);
+        const members: { sourceRepoPath: string; relativePath: string }[] = [];
+        let allMembersResolved = true;
+        for (const m of memberRows) {
+          const cb = await codebaseDb.getCodebase(m.codebase_id);
+          if (!cb) {
+            allMembersResolved = false;
+            break;
+          }
+          members.push({ sourceRepoPath: cb.default_cwd, relativePath: m.relative_path });
+        }
+        for (const w of groupWorktrees) {
+          await removeGroupWorktree(name, w.branch, allMembersResolved ? members : undefined, {
+            force: discardUncommitted,
+          });
+        }
+      }
+
       await workspaceGroupDb.removeGroup(group.id);
       return c.json({ success: true });
     } catch (error) {
