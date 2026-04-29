@@ -175,15 +175,23 @@ describe('pushGroupWorktree', () => {
   it('opens a PR per member with --pr and cross-links them', async () => {
     setupGroup('feat/x', ['svc-a', 'svc-b']);
     try {
-      // pushGroupWorktree runs phase 1 (all pushes), then phase 2 (per-member
-      // git log for title, then gh pr create), then phase 3 (cross-link edits).
-      // Queue must match that ordering, not interleaved per-member.
+      // Order: phase 1 (push×N), gh auth status pre-flight, phase 2 (per member:
+      // git log + gh pr create + gh pr view --json), phase 3 (cross-link edits).
       nextResults.push({ ok: true }); // push svc-a
       nextResults.push({ ok: true }); // push svc-b
-      nextResults.push({ ok: true, stdout: 'feat: add svc-a thing' }); // git log -1 svc-a
-      nextResults.push({ ok: true, stdout: 'https://github.com/owner/svc-a/pull/42' }); // gh pr create svc-a
-      nextResults.push({ ok: true, stdout: 'feat: add svc-b thing' }); // git log -1 svc-b
-      nextResults.push({ ok: true, stdout: 'https://github.com/owner/svc-b/pull/7' }); // gh pr create svc-b
+      nextResults.push({ ok: true }); // gh auth status (pre-flight)
+      nextResults.push({ ok: true, stdout: 'feat: add svc-a thing' }); // git log svc-a
+      nextResults.push({ ok: true, stdout: 'created PR' }); // gh pr create svc-a
+      nextResults.push({
+        ok: true,
+        stdout: JSON.stringify({ url: 'https://github.com/owner/svc-a/pull/42', number: 42 }),
+      }); // gh pr view svc-a
+      nextResults.push({ ok: true, stdout: 'feat: add svc-b thing' }); // git log svc-b
+      nextResults.push({ ok: true, stdout: 'created PR' }); // gh pr create svc-b
+      nextResults.push({
+        ok: true,
+        stdout: JSON.stringify({ url: 'https://github.com/owner/svc-b/pull/7', number: 7 }),
+      }); // gh pr view svc-b
       // Pass-3: 2 pr-edit calls — fall through to defaults (success).
 
       const result = await pushGroupWorktree('platform', 'feat/x', { openPrs: true });
@@ -215,10 +223,14 @@ describe('pushGroupWorktree', () => {
   it('does not cross-link when only one PR was opened', async () => {
     setupGroup('feat/x', ['svc-only']);
     try {
-      // single-member: push, then git log, then gh pr create
       nextResults.push({ ok: true }); // push
+      nextResults.push({ ok: true }); // gh auth status
       nextResults.push({ ok: true, stdout: 'msg' }); // git log
-      nextResults.push({ ok: true, stdout: 'https://github.com/o/svc-only/pull/1' }); // gh pr create
+      nextResults.push({ ok: true, stdout: 'created PR' }); // gh pr create
+      nextResults.push({
+        ok: true,
+        stdout: JSON.stringify({ url: 'https://github.com/o/svc-only/pull/1', number: 1 }),
+      }); // gh pr view
 
       const result = await pushGroupWorktree('platform', 'feat/x', { openPrs: true });
       expect(result.prs).toHaveLength(1);
@@ -229,17 +241,47 @@ describe('pushGroupWorktree', () => {
     }
   });
 
+  it('aborts the PR phase when gh auth status fails', async () => {
+    setupGroup('feat/x', ['svc-a']);
+    try {
+      nextResults.push({ ok: true }); // push svc-a
+      nextResults.push({
+        ok: false,
+        err: Object.assign(new Error('not logged in'), {
+          stderr: 'You are not logged into any GitHub hosts.',
+        }),
+      }); // gh auth status
+
+      const result = await pushGroupWorktree('platform', 'feat/x', { openPrs: true });
+      expect(result.pushed).toHaveLength(1); // push still succeeded
+      expect(result.prs).toHaveLength(0);
+      expect(
+        result.errors.some(e => e.phase === 'pr-create' && e.message.includes('gh pre-flight'))
+      ).toBe(true);
+      // No `gh pr create` calls were attempted.
+      expect(prCreateCalls()).toHaveLength(0);
+    } finally {
+      teardown();
+    }
+  });
+
   it('handles pr-create failure on one member and continues for others', async () => {
     setupGroup('feat/x', ['svc-a', 'svc-b']);
     try {
-      // Phase 1: pushes both succeed. Phase 2: svc-a git log + pr-create (fails),
-      // then svc-b git log + pr-create (succeeds).
       nextResults.push({ ok: true }); // push svc-a
       nextResults.push({ ok: true }); // push svc-b
+      nextResults.push({ ok: true }); // gh auth status
       nextResults.push({ ok: true, stdout: 'msg' }); // git log svc-a
-      nextResults.push({ ok: false, err: Object.assign(new Error('boom'), { stderr: 'no auth' }) }); // pr create svc-a
+      nextResults.push({
+        ok: false,
+        err: Object.assign(new Error('boom'), { stderr: 'rate limited' }),
+      }); // pr create svc-a fails
       nextResults.push({ ok: true, stdout: 'msg' }); // git log svc-b
-      nextResults.push({ ok: true, stdout: 'https://github.com/o/svc-b/pull/9' }); // pr create svc-b
+      nextResults.push({ ok: true, stdout: 'created' }); // pr create svc-b
+      nextResults.push({
+        ok: true,
+        stdout: JSON.stringify({ url: 'https://github.com/o/svc-b/pull/9', number: 9 }),
+      }); // gh pr view svc-b
 
       const result = await pushGroupWorktree('platform', 'feat/x', { openPrs: true });
       expect(result.prs).toHaveLength(1);

@@ -91,18 +91,25 @@ async function resolveMembers(groupId: string, groupDir: string): Promise<Member
 }
 
 /**
- * Try to extract the URL printed by `gh pr create`. The CLI prints the URL on
- * its own line in stdout (sometimes after a leading message). We grep the
- * first https://...github.com/.../pull/N URL we see.
+ * Parse `gh pr create --json url,number` stdout. Returns `null` if the JSON
+ * shape is wrong (the caller should treat that as a hard error since the gh
+ * version may be too old to support `--json` on `pr create`).
+ *
+ * Why this over regex-on-stdout: gh sometimes prints leading messages
+ * ("A pull request for branch X already exists at https://.../pull/5; created
+ * https://.../pull/6") and the first URL match was the wrong PR. JSON output
+ * is unambiguous.
  */
-function parsePrUrl(stdout: string): string | undefined {
-  const match = /https?:\/\/[^\s]+\/pull\/\d+/.exec(stdout);
-  return match?.[0];
-}
-
-function parsePrNumber(url: string): number | undefined {
-  const match = /\/pull\/(\d+)/.exec(url);
-  return match?.[1] ? Number(match[1]) : undefined;
+function parsePrJson(stdout: string): { url: string; number: number } | null {
+  try {
+    const data = JSON.parse(stdout) as { url?: unknown; number?: unknown };
+    if (typeof data.url === 'string' && typeof data.number === 'number') {
+      return { url: data.url, number: data.number };
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -220,6 +227,29 @@ export async function pushGroupWorktree(
     return result;
   }
 
+  // Pre-flight: confirm `gh` is installed and authenticated. Failing here is
+  // friendlier than failing inside the per-member pr-create loop, where each
+  // failure clutters output and leaves PRs partially opened.
+  try {
+    await execFileAsync('gh', ['auth', 'status'], { timeout: 10000 });
+  } catch (err) {
+    const e = err as Error & { code?: string; stderr?: string };
+    const isMissing = e.code === 'ENOENT' || e.message.includes('command not found');
+    const detail = isMissing
+      ? 'gh CLI is not installed or not on PATH.'
+      : (e.stderr ?? e.message).split('\n').slice(0, 2).join(' ');
+    console.error(
+      `\nSkipping PR creation: ${detail}\n` +
+        '  Install gh from https://cli.github.com and run `gh auth login`, then try again.'
+    );
+    result.errors.push({
+      relativePath: '*',
+      phase: 'pr-create',
+      message: `gh pre-flight failed: ${detail}`,
+    });
+    return result;
+  }
+
   // Phase 2: open a PR per pushed member.
   for (const pushed of result.pushed) {
     // Pick a title from the most recent commit subject on the worktree's HEAD.
@@ -242,30 +272,44 @@ export async function pushGroupWorktree(
     try {
       const out = await execFileAsync(
         'gh',
-        ['pr', 'create', '--head', branch, '--title', title, '--body', baseBody],
+        [
+          'pr',
+          'create',
+          '--head',
+          branch,
+          '--title',
+          title,
+          '--body',
+          baseBody,
+          // Note: gh's `pr create` doesn't support --json directly. We open the
+          // PR plainly, then fetch its number/url with `gh pr view --json`.
+        ],
         { timeout: 30000, cwd: pushed.worktreePath }
       );
-      const url = parsePrUrl(out.stdout);
-      if (!url) {
+      // gh pr create stdout: free-form text that ends with the URL. We re-query
+      // the PR by branch to get a canonical { url, number } pair, immune to gh
+      // printing extra messages above the URL.
+      void out;
+      const view = await execFileAsync('gh', ['pr', 'view', branch, '--json', 'url,number'], {
+        timeout: 15000,
+        cwd: pushed.worktreePath,
+      });
+      const parsed = parsePrJson(view.stdout);
+      if (!parsed) {
         result.errors.push({
           relativePath: pushed.relativePath,
           phase: 'pr-create',
-          message: `gh pr create returned no recognizable URL: ${out.stdout.slice(0, 120)}`,
+          message: `gh pr view returned unexpected JSON shape: ${view.stdout.slice(0, 120)}`,
         });
-        console.error(`  ✗ pr-create returned no URL for ${pushed.relativePath}`);
+        console.error(`  ✗ pr lookup failed for ${pushed.relativePath}`);
         continue;
       }
-      const number = parsePrNumber(url);
-      if (number === undefined) {
-        result.errors.push({
-          relativePath: pushed.relativePath,
-          phase: 'pr-create',
-          message: `Could not parse PR number from URL: ${url}`,
-        });
-        continue;
-      }
-      result.prs.push({ relativePath: pushed.relativePath, url, number });
-      console.log(`  ✓ opened PR in ${pushed.relativePath} repo: ${url}`);
+      result.prs.push({
+        relativePath: pushed.relativePath,
+        url: parsed.url,
+        number: parsed.number,
+      });
+      console.log(`  ✓ opened PR in ${pushed.relativePath} repo: ${parsed.url}`);
     } catch (err) {
       const e = err as Error & { stderr?: string };
       const message =
