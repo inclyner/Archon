@@ -17,7 +17,7 @@
  * creation, event subscription, post-run side effects like --auto-pr) stay
  * with the caller.
  */
-import { getDefaultBranch, toRepoPath } from '@archon/git';
+import { execFileAsync, getDefaultBranch, toRepoPath } from '@archon/git';
 import { createGroupWorktree, type GroupWorktreeResult } from '@archon/isolation';
 import {
   applyGroupSubstitutionsToWorkflow,
@@ -108,15 +108,50 @@ export async function setUpGroupRun(opts: SetUpGroupRunOpts): Promise<GroupRunSe
     });
   }
 
-  // Pick base branch from first member. If detection fails, fall back to "main" —
-  // worktree creation will fail loudly later if "main" doesn't exist either.
-  let baseBranch = 'main';
+  // Pick a base branch from the first member.
+  //
+  // Detection chain:
+  //   1. getDefaultBranch (reads origin/HEAD symbolic-ref)
+  //   2. local 'main' branch
+  //   3. local 'master' branch (older convention; common for cloned-from-template repos)
+  //   4. throw with a clear message — no silent fallback
+  //
+  // Why try local refs before failing: a cloned-from-template repo often has
+  // no origin/HEAD set, so getDefaultBranch fails. The repo still has a local
+  // 'main' or 'master'. Silently falling back to 'main' meant `git branch <new>
+  // main` would fail later with a confusing "main is not a valid object name"
+  // error deep inside the worktree provider.
+  const firstMemberPath = members[0].sourceRepoPath;
+  let baseBranch: string | null = null;
   try {
-    baseBranch = await getDefaultBranch(toRepoPath(members[0].sourceRepoPath));
+    baseBranch = await getDefaultBranch(toRepoPath(firstMemberPath));
   } catch (err) {
-    getLog().warn(
-      { err: err as Error, sourceRepoPath: members[0].sourceRepoPath },
-      'core.group_run.base_branch_detect_failed'
+    getLog().debug(
+      { err: err as Error, sourceRepoPath: firstMemberPath },
+      'core.group_run.default_branch_detect_failed'
+    );
+  }
+  if (!baseBranch) {
+    for (const candidate of ['main', 'master']) {
+      try {
+        await execFileAsync(
+          'git',
+          ['-C', firstMemberPath, 'rev-parse', '--verify', `refs/heads/${candidate}`],
+          { timeout: 10000 }
+        );
+        baseBranch = candidate;
+        break;
+      } catch {
+        // try next candidate
+      }
+    }
+  }
+  if (!baseBranch) {
+    throw new Error(
+      `Could not detect a base branch for group "${groupName}". The first member ` +
+        `(${firstMemberPath}) has no origin/HEAD symbolic-ref and no local 'main' or ` +
+        "'master' branch. Set worktree.baseBranch in .archon/config.yaml or pass an " +
+        'explicit branch via the API/CLI.'
     );
   }
 
