@@ -23,13 +23,16 @@ import {
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { WorktreeList } from '@/components/workspace-groups/WorktreeList';
+import { RunGroupWorkflowDialog } from '@/components/workspace-groups/RunGroupWorkflowDialog';
 import { deleteWorkspaceGroup, getWorkspaceGroup } from '@/lib/api';
+import { useState } from 'react';
 
 export function GroupDetailPage(): React.ReactElement {
   const params = useParams<{ name: string }>();
   const groupName = params.name ?? '';
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const [runOpen, setRunOpen] = useState(false);
 
   const query = useQuery({
     queryKey: ['workspace-group', groupName],
@@ -147,19 +150,24 @@ export function GroupDetailPage(): React.ReactElement {
           )}
         </section>
 
-        {/* Run workflow section (B3 wires this up to actually fire) */}
+        {/* Run workflow section */}
         <section>
           <div className="mb-2">
             <h2 className="text-sm font-semibold text-text-primary">Run a workflow</h2>
             <p className="text-xs text-text-tertiary">
-              Runs the workflow against all members in one AI session. The button below is wired up
-              in B3 (web-triggered group runs); for now, use the CLI:
+              One AI session edits across all members of this group. Each member's edits land in its
+              own worktree → its own commits → its own PR. You can also use the CLI:
             </p>
             <pre className="mt-2 overflow-x-auto rounded-md bg-surface-elevated p-3 text-[11px] text-text-secondary">
               archon workflow run &lt;workflow&gt; --group {group.name} &quot;your task&quot;
             </pre>
           </div>
-          <Button size="sm" disabled title="Coming in B3 — web-triggered group runs">
+          <Button
+            size="sm"
+            onClick={() => {
+              setRunOpen(true);
+            }}
+          >
             <Play className="mr-1 h-4 w-4" />
             Run workflow against this group
           </Button>
@@ -224,6 +232,8 @@ export function GroupDetailPage(): React.ReactElement {
           </div>
         </section>
       </div>
+
+      <RunGroupWorkflowDialog open={runOpen} onOpenChange={setRunOpen} groupName={groupName} />
     </div>
   );
 }

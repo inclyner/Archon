@@ -302,6 +302,27 @@ export async function deleteWorkspaceGroupWorktree(
   );
 }
 
+export interface RunGroupWorkflowResponse {
+  accepted: boolean;
+  groupName: string;
+  workflowName: string;
+  branch: string;
+  groupDir: string;
+  conversationId: string;
+  workflowRunId: string | null;
+}
+
+export async function runWorkspaceGroupWorkflow(
+  groupName: string,
+  input: { workflowName: string; message: string; conversationId: string }
+): Promise<RunGroupWorkflowResponse> {
+  return fetchJSON<RunGroupWorkflowResponse>(`/api/groups/${encodeURIComponent(groupName)}/run`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+}
+
 export interface WorkflowRunResponse {
   id: string;
   workflow_name: string;
