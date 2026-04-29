@@ -212,6 +212,96 @@ export async function deleteCodebase(id: string): Promise<{ success: boolean }> 
   return fetchJSON<{ success: boolean }>(`/api/codebases/${id}`, { method: 'DELETE' });
 }
 
+// Workspace groups
+//
+// A workspace group is a non-git parent directory containing N sibling git
+// repositories. The web UI uses these endpoints to register groups, browse
+// them, manage on-disk worktrees, and (in B3) launch workflow runs.
+
+export interface WorkspaceGroupResponse {
+  id: string;
+  name: string;
+  parent_path: string;
+  created_at: string;
+}
+
+export interface WorkspaceGroupMemberResponse {
+  group_id: string;
+  codebase_id: string;
+  relative_path: string;
+}
+
+export interface WorkspaceGroupRegisterMemberOutcome {
+  relativePath: string;
+  codebaseId: string | null;
+  name: string | null;
+  alreadyExisted: boolean;
+  error: string | null;
+}
+
+export interface WorkspaceGroupRegisterResponse {
+  group: WorkspaceGroupResponse;
+  members: WorkspaceGroupMemberResponse[];
+  summary: WorkspaceGroupRegisterMemberOutcome[];
+}
+
+export interface WorkspaceGroupDetailResponse {
+  group: WorkspaceGroupResponse;
+  members: WorkspaceGroupMemberResponse[];
+}
+
+export interface ListedGroupWorktreeResponse {
+  groupName: string;
+  branch: string;
+  path: string;
+}
+
+export async function listWorkspaceGroups(): Promise<WorkspaceGroupResponse[]> {
+  const data = await fetchJSON<{ groups: WorkspaceGroupResponse[] }>('/api/groups');
+  return data.groups;
+}
+
+export async function getWorkspaceGroup(name: string): Promise<WorkspaceGroupDetailResponse> {
+  return fetchJSON<WorkspaceGroupDetailResponse>(`/api/groups/${encodeURIComponent(name)}`);
+}
+
+export async function registerWorkspaceGroup(input: {
+  parentPath: string;
+  name?: string;
+}): Promise<WorkspaceGroupRegisterResponse> {
+  return fetchJSON<WorkspaceGroupRegisterResponse>('/api/groups', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+}
+
+export async function deleteWorkspaceGroup(name: string): Promise<{ success: boolean }> {
+  return fetchJSON<{ success: boolean }>(`/api/groups/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function listWorkspaceGroupWorktrees(
+  name: string
+): Promise<ListedGroupWorktreeResponse[]> {
+  const data = await fetchJSON<{ worktrees: ListedGroupWorktreeResponse[] }>(
+    `/api/groups/${encodeURIComponent(name)}/worktrees`
+  );
+  return data.worktrees;
+}
+
+export async function deleteWorkspaceGroupWorktree(
+  name: string,
+  branch: string
+): Promise<{ success: boolean }> {
+  // Branch names are passed as recorded on disk (slashes already flattened to __).
+  return fetchJSON<{ success: boolean }>(
+    `/api/groups/${encodeURIComponent(name)}/worktrees/${encodeURIComponent(branch)}`,
+    { method: 'DELETE' }
+  );
+}
+
 export interface WorkflowRunResponse {
   id: string;
   workflow_name: string;

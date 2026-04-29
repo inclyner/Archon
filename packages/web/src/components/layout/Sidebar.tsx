@@ -1,6 +1,13 @@
 import { useState, useRef, useMemo, useEffect, useCallback } from 'react';
 import { useNavigate, Link } from 'react-router';
-import { Plus, Loader2, ChevronDown, FolderGit2, MessageSquarePlus } from 'lucide-react';
+import {
+  Plus,
+  Loader2,
+  ChevronDown,
+  FolderGit2,
+  FolderTree,
+  MessageSquarePlus,
+} from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
@@ -203,6 +210,13 @@ export function Sidebar(): React.ReactElement {
           <MessageSquarePlus className="h-4 w-4 shrink-0" />
           New Chat
         </button>
+        <Link
+          to="/groups"
+          className="mt-1 flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium text-text-secondary hover:bg-surface-elevated hover:text-text-primary transition-colors"
+        >
+          <FolderTree className="h-4 w-4 shrink-0" />
+          Workspace Groups
+        </Link>
       </div>
 
       <Separator className="bg-border" />
