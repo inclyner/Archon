@@ -22,6 +22,7 @@ import {
   applyGroupSubstitutionsToWorkflow,
   type GroupSubstitutionContext,
 } from '@archon/workflows/utils/group-substitution';
+import { pushGroupWorktree } from './group-push';
 import {
   getWorkflowEventEmitter,
   type WorkflowEmitterEvent,
@@ -75,6 +76,12 @@ export interface WorkflowRunOptions {
    * exclusive with branchName / fromBranch / noWorktree / resume.
    */
   group?: string;
+  /**
+   * After a successful --group run, push each child branch to its remote and
+   * open a PR per child (with sibling PR cross-linking in PR bodies). No-op
+   * when --group is not set or when the workflow run fails.
+   */
+  autoPr?: boolean;
   quiet?: boolean;
   verbose?: boolean;
   /** Platform conversation ID (e.g. `cli-{ts}-{rand}`), NOT a DB UUID. */
@@ -951,6 +958,22 @@ async function runWorkflowAgainstGroup(
     }
     console.log('\nWorkflow completed successfully.');
     console.log(`Worktree left in place at ${worktree.groupDir} for inspection.`);
+
+    if (options.autoPr) {
+      console.log('\n--auto-pr enabled: pushing each child branch and opening PRs...');
+      try {
+        const pushResult = await pushGroupWorktree(group.name, branch, { openPrs: true });
+        if (pushResult.errors.length > 0) {
+          console.warn(
+            `\nauto-pr completed with ${pushResult.errors.length} error(s); PRs you got: ${pushResult.prs.length}.`
+          );
+        }
+      } catch (err) {
+        const e = err as Error;
+        console.error(`\nauto-pr failed: ${e.message}`);
+        getLog().warn({ err: e, group: group.name, branch }, 'cli.auto_pr_failed');
+      }
+    }
   } else {
     console.log(`Worktree left in place at ${worktree.groupDir} for inspection.`);
     throw new Error(`Workflow failed: ${result.error}`);

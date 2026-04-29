@@ -66,6 +66,7 @@ import {
   groupRemoveCommand,
   groupCleanupCommand,
 } from './commands/group';
+import { groupPushCommand } from './commands/group-push';
 import { continueCommand } from './commands/continue';
 import { chatCommand } from './commands/chat';
 import { setupCommand } from './commands/setup';
@@ -112,6 +113,7 @@ Commands:
   group list                 List all workspace groups
   group show <name>          Show a group's parent path and member repos
   group remove <name>        Unregister a group (member codebases preserved)
+  group push <name>          Push each member's branch (--branch <name>); add --pr to open PRs
   group cleanup <name>       Remove group worktrees (--branch X | --all | default >7d, requires --force)
   continue <branch> [msg]    Continue work on an existing worktree with prior context
   complete <branch> [...]    Complete branch lifecycle (remove worktree + branches)
@@ -137,6 +139,9 @@ Options:
   --download-only            Download web UI without starting the server
   --name <name>              Override group name for 'group register' (default: parent dirname)
   --group <name>             Run a workflow against a registered workspace group
+  --pr                       Open a PR per child after pushing (with 'group push')
+  --dry-run                  Print planned actions without executing them
+  --auto-pr                  After a successful --group run, push each child branch and open PRs
 
 Examples:
   archon chat "What does the orchestrator do?"
@@ -223,6 +228,9 @@ async function main(): Promise<number> {
         group: { type: 'string' },
         days: { type: 'string' },
         all: { type: 'boolean' },
+        pr: { type: 'boolean' },
+        'dry-run': { type: 'boolean' },
+        'auto-pr': { type: 'boolean' },
       },
       allowPositionals: true,
       strict: false, // Allow unknown flags to pass through
@@ -390,6 +398,9 @@ async function main(): Promise<number> {
                 );
                 return 1;
               }
+            } else if (values['auto-pr']) {
+              console.error('Error: --auto-pr requires --group.');
+              return 1;
             }
             const options = {
               branchName,
@@ -397,6 +408,7 @@ async function main(): Promise<number> {
               noWorktree,
               resume: resumeFlag,
               group: groupOpt,
+              autoPr: values['auto-pr'] as boolean | undefined,
               quiet: values.quiet as boolean | undefined,
               verbose: values.verbose as boolean | undefined,
             };
@@ -557,6 +569,19 @@ async function main(): Promise<number> {
             return await groupRemoveCommand(removeName);
           }
 
+          case 'push': {
+            const pushName = positionals[2];
+            if (!pushName) {
+              console.error('Usage: archon group push <name> --branch <branch> [--pr] [--dry-run]');
+              return 1;
+            }
+            return await groupPushCommand(pushName, {
+              branch: branchName,
+              pr: values.pr as boolean | undefined,
+              dryRun: values['dry-run'] as boolean | undefined,
+            });
+          }
+
           case 'cleanup': {
             const cleanupName = positionals[2];
             if (!cleanupName) {
@@ -589,7 +614,7 @@ async function main(): Promise<number> {
             } else {
               console.error(`Unknown group subcommand: ${subcommand}`);
             }
-            console.error('Available: register, list, show, remove, cleanup');
+            console.error('Available: register, list, show, remove, push, cleanup');
             return 1;
         }
 
