@@ -7,9 +7,16 @@
  * helper, and stores the group + member junction.
  */
 import { existsSync, statSync, readdirSync } from 'fs';
+import { stat as fsStat } from 'fs/promises';
 import { resolve, basename, join } from 'path';
-import { workspaceGroupDb, registerRepository, type RegisterResult } from '@archon/core';
+import {
+  workspaceGroupDb,
+  registerRepository,
+  codebaseDb,
+  type RegisterResult,
+} from '@archon/core';
 import type { WorkspaceGroupMember } from '@archon/core';
+import { listGroupWorktrees, removeGroupWorktree } from '@archon/isolation';
 import { createLogger } from '@archon/paths';
 
 /** Lazy-initialized logger (deferred so test mocks can intercept createLogger) */
@@ -192,4 +199,137 @@ export async function groupRemoveCommand(name: string): Promise<number> {
   await workspaceGroupDb.removeGroup(group.id);
   console.log(`Group "${name}" removed (member codebases preserved).`);
   return 0;
+}
+
+/**
+ * Resolve the source-repo paths and relative paths for a group's members,
+ * suitable for handing to removeGroupWorktree (which calls
+ * `git worktree remove` per member). Returns null if any member's codebase
+ * row is missing — the caller should fall back to plain rm.
+ */
+async function resolveGroupMembersForRemoval(
+  groupId: string
+): Promise<{ sourceRepoPath: string; relativePath: string }[] | null> {
+  const memberRows = await workspaceGroupDb.getMembersForGroup(groupId);
+  const out: { sourceRepoPath: string; relativePath: string }[] = [];
+  for (const m of memberRows) {
+    const cb = await codebaseDb.getCodebase(m.codebase_id);
+    if (!cb) {
+      return null;
+    }
+    out.push({ sourceRepoPath: cb.default_cwd, relativePath: m.relative_path });
+  }
+  return out;
+}
+
+interface CleanupSelection {
+  branch: string;
+  path: string;
+  ageDays: number;
+}
+
+/**
+ * `archon group cleanup <name> [--branch X | --all] [--days N] [--force]`
+ *
+ * Selection (mutually exclusive):
+ *   --branch <name> : that one branch's worktree
+ *   --all           : every worktree for this group
+ *   (default)       : worktrees with mtime older than --days (default 7)
+ */
+export async function groupCleanupCommand(
+  name: string,
+  options: { branch?: string; all?: boolean; days?: number; force?: boolean } = {}
+): Promise<number> {
+  const group = await workspaceGroupDb.getGroupByName(name);
+  if (!group) {
+    console.error(`Error: no group named "${name}".`);
+    return 1;
+  }
+
+  if (options.branch && options.all) {
+    console.error('Error: --branch and --all are mutually exclusive.');
+    return 1;
+  }
+
+  const allWorktrees = await listGroupWorktrees();
+  const groupWorktrees = allWorktrees.filter(w => w.groupName === name);
+
+  if (groupWorktrees.length === 0) {
+    console.log(`No worktrees on disk for group "${name}".`);
+    return 0;
+  }
+
+  // Compute age from mtime — best-effort; on stat failure treat as 0d.
+  const now = Date.now();
+  const enriched: CleanupSelection[] = [];
+  for (const wt of groupWorktrees) {
+    let ageDays = 0;
+    try {
+      const stats = await fsStat(wt.path);
+      ageDays = (now - stats.mtimeMs) / (1000 * 60 * 60 * 24);
+    } catch (err) {
+      getLog().warn({ err: err as Error, path: wt.path }, 'group.cleanup.stat_failed');
+    }
+    enriched.push({ branch: wt.branch, path: wt.path, ageDays });
+  }
+
+  let selected: CleanupSelection[];
+  if (options.branch) {
+    selected = enriched.filter(w => w.branch === options.branch);
+    if (selected.length === 0) {
+      console.error(
+        `Error: no worktree for group "${name}" on branch "${options.branch}".\n` +
+          `Available branches: ${enriched.map(w => w.branch).join(', ') || '(none)'}`
+      );
+      return 1;
+    }
+  } else if (options.all) {
+    selected = enriched;
+  } else {
+    const threshold = options.days ?? 7;
+    selected = enriched.filter(w => w.ageDays >= threshold);
+    if (selected.length === 0) {
+      console.log(
+        `No worktrees older than ${threshold} day(s) for group "${name}".\n` +
+          'Use --branch <name> or --all to override.'
+      );
+      return 0;
+    }
+  }
+
+  console.log(`Will remove ${selected.length} worktree(s) for group "${name}":`);
+  for (const w of selected) {
+    console.log(`  ${w.branch}  (age ${w.ageDays.toFixed(1)}d)  ${w.path}`);
+  }
+
+  if (!options.force) {
+    console.log('\nPass --force to actually remove. Aborting (no changes made).');
+    return 0;
+  }
+
+  // Resolve members once; if any codebase is missing, fall back to plain rm.
+  const memberPaths = await resolveGroupMembersForRemoval(group.id);
+  if (!memberPaths) {
+    console.warn(
+      'Warning: one or more member codebases are missing — git worktree pointers in the source repos may be left dangling.'
+    );
+  }
+
+  let removed = 0;
+  let failed = 0;
+  for (const w of selected) {
+    try {
+      await removeGroupWorktree(name, w.branch, memberPaths ?? undefined);
+      console.log(`  ✓ removed ${w.branch}`);
+      removed++;
+    } catch (err) {
+      const e = err as Error;
+      getLog().warn({ err: e, branch: w.branch }, 'group.cleanup.remove_failed');
+      console.error(`  ✗ ${w.branch} — ${e.message}`);
+      failed++;
+    }
+  }
+
+  console.log(`\nCleanup complete: ${removed} removed, ${failed} failed.`);
+  return failed === 0 ? 0 : 1;
 }

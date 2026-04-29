@@ -50,6 +50,10 @@ const mockRegisterRepository = mock<(localPath: string) => Promise<unknown>>(loc
   })
 );
 
+const mockGetCodebase = mock<(id: string) => Promise<unknown>>(id =>
+  Promise.resolve({ id, default_cwd: '/src/' + id, name: 'owner/' + id })
+);
+
 mock.module('@archon/core', () => ({
   workspaceGroupDb: {
     getGroupByName: mockGetGroupByName,
@@ -59,7 +63,20 @@ mock.module('@archon/core', () => ({
     getMembersForGroup: mockGetMembersForGroup,
     removeGroup: mockRemoveGroup,
   },
+  codebaseDb: {
+    getCodebase: mockGetCodebase,
+  },
   registerRepository: mockRegisterRepository,
+}));
+
+const mockListGroupWorktrees = mock<() => Promise<unknown[]>>(() => Promise.resolve([]));
+const mockRemoveGroupWorktree = mock<
+  (groupName: string, branch: string, members?: unknown) => Promise<void>
+>(() => Promise.resolve());
+
+mock.module('@archon/isolation', () => ({
+  listGroupWorktrees: mockListGroupWorktrees,
+  removeGroupWorktree: mockRemoveGroupWorktree,
 }));
 
 import {
@@ -67,6 +84,7 @@ import {
   groupListCommand,
   groupShowCommand,
   groupRemoveCommand,
+  groupCleanupCommand,
 } from './group';
 
 // --- helpers --------------------------------------------------------------
@@ -320,5 +338,128 @@ describe('groupRemoveCommand', () => {
     const code = await groupRemoveCommand('platform');
     expect(code).toBe(0);
     expect(mockRemoveGroup).toHaveBeenCalledWith('g1');
+  });
+});
+
+describe('groupCleanupCommand', () => {
+  beforeEach(() => {
+    mockGetGroupByName.mockClear();
+    mockGetMembersForGroup.mockClear();
+    mockGetCodebase.mockClear();
+    mockListGroupWorktrees.mockClear();
+    mockRemoveGroupWorktree.mockClear();
+    // Reset implementations so a leftover `mockImplementationOnce` from a
+    // previous test (where the function never reached it because of an early
+    // return) doesn't fire on the next test's call. We set defaults explicitly
+    // and use `mockImplementation` (not `Once`) below.
+    mockGetCodebase.mockImplementation(id =>
+      Promise.resolve({ id, default_cwd: '/src/' + id, name: 'owner/' + id })
+    );
+    mockListGroupWorktrees.mockImplementation(() => Promise.resolve([]));
+    mockRemoveGroupWorktree.mockImplementation(() => Promise.resolve());
+    spyOn(console, 'log').mockImplementation(() => undefined);
+    spyOn(console, 'error').mockImplementation(() => undefined);
+    spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  function setupGroup(): void {
+    mockGetGroupByName.mockImplementation(() =>
+      Promise.resolve({
+        id: 'g1',
+        name: 'platform',
+        parent_path: '/dev/p',
+        created_at: new Date(),
+      })
+    );
+    mockGetMembersForGroup.mockImplementation(() =>
+      Promise.resolve([{ group_id: 'g1', codebase_id: 'cb-a', relative_path: 'svc-a' }])
+    );
+  }
+
+  it('errors when group does not exist', async () => {
+    mockGetGroupByName.mockImplementationOnce(() => Promise.resolve(null));
+    const code = await groupCleanupCommand('missing');
+    expect(code).toBe(1);
+    expect(mockRemoveGroupWorktree).not.toHaveBeenCalled();
+  });
+
+  it('errors when --branch and --all are both passed', async () => {
+    setupGroup();
+    mockListGroupWorktrees.mockImplementation(() =>
+      Promise.resolve([{ groupName: 'platform', branch: 'feat/x', path: '/p' }])
+    );
+    const code = await groupCleanupCommand('platform', { branch: 'feat/x', all: true });
+    expect(code).toBe(1);
+    expect(mockRemoveGroupWorktree).not.toHaveBeenCalled();
+  });
+
+  it('reports no worktrees when none on disk', async () => {
+    setupGroup();
+    mockListGroupWorktrees.mockImplementation(() => Promise.resolve([]));
+    const code = await groupCleanupCommand('platform', { all: true, force: true });
+    expect(code).toBe(0);
+    expect(mockRemoveGroupWorktree).not.toHaveBeenCalled();
+  });
+
+  it('without --force, lists candidates but does not remove', async () => {
+    setupGroup();
+    mockListGroupWorktrees.mockImplementation(() =>
+      Promise.resolve([{ groupName: 'platform', branch: 'feat/x', path: '/p' }])
+    );
+    const code = await groupCleanupCommand('platform', { all: true });
+    expect(code).toBe(0);
+    expect(mockRemoveGroupWorktree).not.toHaveBeenCalled();
+  });
+
+  it('with --branch + --force removes only the matching worktree', async () => {
+    setupGroup();
+    mockListGroupWorktrees.mockImplementation(() =>
+      Promise.resolve([
+        { groupName: 'platform', branch: 'feat/x', path: '/p/x' },
+        { groupName: 'platform', branch: 'feat/y', path: '/p/y' },
+      ])
+    );
+    const code = await groupCleanupCommand('platform', { branch: 'feat/y', force: true });
+    expect(code).toBe(0);
+    expect(mockRemoveGroupWorktree).toHaveBeenCalledTimes(1);
+    expect(mockRemoveGroupWorktree.mock.calls[0]?.[1]).toBe('feat/y');
+  });
+
+  it('errors when --branch matches no worktree', async () => {
+    setupGroup();
+    mockListGroupWorktrees.mockImplementation(() =>
+      Promise.resolve([{ groupName: 'platform', branch: 'feat/x', path: '/p/x' }])
+    );
+    const code = await groupCleanupCommand('platform', { branch: 'no-such', force: true });
+    expect(code).toBe(1);
+    expect(mockRemoveGroupWorktree).not.toHaveBeenCalled();
+  });
+
+  it('with --all + --force removes all worktrees of the group', async () => {
+    setupGroup();
+    mockListGroupWorktrees.mockImplementation(() =>
+      Promise.resolve([
+        { groupName: 'platform', branch: 'feat/x', path: '/p/x' },
+        { groupName: 'platform', branch: 'feat/y', path: '/p/y' },
+        { groupName: 'other', branch: 'feat/z', path: '/o/z' }, // different group, ignored
+      ])
+    );
+    const code = await groupCleanupCommand('platform', { all: true, force: true });
+    expect(code).toBe(0);
+    expect(mockRemoveGroupWorktree).toHaveBeenCalledTimes(2);
+    const branches = mockRemoveGroupWorktree.mock.calls.map(c => c[1]);
+    expect(branches.sort()).toEqual(['feat/x', 'feat/y']);
+  });
+
+  it('warns and falls back to plain rm when a member codebase is missing', async () => {
+    setupGroup();
+    mockGetCodebase.mockImplementation(() => Promise.resolve(null));
+    mockListGroupWorktrees.mockImplementation(() =>
+      Promise.resolve([{ groupName: 'platform', branch: 'feat/x', path: '/p/x' }])
+    );
+    const code = await groupCleanupCommand('platform', { all: true, force: true });
+    expect(code).toBe(0);
+    // Called with members=undefined fallback
+    expect(mockRemoveGroupWorktree.mock.calls[0]?.[2]).toBeUndefined();
   });
 });

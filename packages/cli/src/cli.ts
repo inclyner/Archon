@@ -64,6 +64,7 @@ import {
   groupListCommand,
   groupShowCommand,
   groupRemoveCommand,
+  groupCleanupCommand,
 } from './commands/group';
 import { continueCommand } from './commands/continue';
 import { chatCommand } from './commands/chat';
@@ -111,6 +112,7 @@ Commands:
   group list                 List all workspace groups
   group show <name>          Show a group's parent path and member repos
   group remove <name>        Unregister a group (member codebases preserved)
+  group cleanup <name>       Remove group worktrees (--branch X | --all | default >7d, requires --force)
   continue <branch> [msg]    Continue work on an existing worktree with prior context
   complete <branch> [...]    Complete branch lifecycle (remove worktree + branches)
   serve                      Start the web UI server (downloads web UI on first run)
@@ -219,6 +221,8 @@ async function main(): Promise<number> {
         force: { type: 'boolean' },
         name: { type: 'string' },
         group: { type: 'string' },
+        days: { type: 'string' },
+        all: { type: 'boolean' },
       },
       allowPositionals: true,
       strict: false, // Allow unknown flags to pass through
@@ -553,13 +557,39 @@ async function main(): Promise<number> {
             return await groupRemoveCommand(removeName);
           }
 
+          case 'cleanup': {
+            const cleanupName = positionals[2];
+            if (!cleanupName) {
+              console.error(
+                'Usage: archon group cleanup <name> [--branch <name>] [--all] [--days <n>] [--force]'
+              );
+              return 1;
+            }
+            const daysRaw = values.days as string | undefined;
+            let days: number | undefined;
+            if (daysRaw !== undefined) {
+              const parsed = Number(daysRaw);
+              if (!Number.isFinite(parsed) || parsed < 0) {
+                console.error('Error: --days must be a non-negative number.');
+                return 1;
+              }
+              days = parsed;
+            }
+            return await groupCleanupCommand(cleanupName, {
+              branch: branchName,
+              all: values.all as boolean | undefined,
+              days,
+              force: values.force as boolean | undefined,
+            });
+          }
+
           default:
             if (subcommand === undefined) {
               console.error('Missing group subcommand');
             } else {
               console.error(`Unknown group subcommand: ${subcommand}`);
             }
-            console.error('Available: register, list, show, remove');
+            console.error('Available: register, list, show, remove, cleanup');
             return 1;
         }
 
