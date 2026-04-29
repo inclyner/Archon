@@ -19,6 +19,10 @@ import { discoverWorkflowsWithConfig } from '@archon/workflows/workflow-discover
 import { resolveWorkflowName } from '@archon/workflows/router';
 import { executeWorkflow } from '@archon/workflows/executor';
 import {
+  applyGroupSubstitutionsToWorkflow,
+  type GroupSubstitutionContext,
+} from '@archon/workflows/utils/group-substitution';
+import {
   getWorkflowEventEmitter,
   type WorkflowEmitterEvent,
 } from '@archon/workflows/event-emitter';
@@ -864,6 +868,19 @@ async function runWorkflowAgainstGroup(
   }
   console.log('');
 
+  // Pre-substitute group variables in the workflow definition. Touches
+  // prompt/script/command/args strings on every node so $GROUP, $GROUP_DIR,
+  // $REPOS, and $REPO_<NAME>_DIR are resolved before the executor sees them.
+  const groupContext: GroupSubstitutionContext = {
+    groupName: group.name,
+    groupDir: worktree.groupDir,
+    members: members.map(m => ({
+      relativePath: m.relativePath,
+      memberDir: worktree.memberDirs[m.codebaseId] ?? '',
+    })),
+  };
+  const groupResolvedWorkflow = applyGroupSubstitutionsToWorkflow(workflow, groupContext);
+
   // Standard CLI plumbing: adapter, conversation, event subscription.
   const adapter = new CLIAdapter();
   const conversationId = options.conversationId ?? generateConversationId();
@@ -905,7 +922,7 @@ async function runWorkflowAgainstGroup(
       adapter,
       conversationId,
       worktree.groupDir,
-      workflow,
+      groupResolvedWorkflow,
       userMessage,
       conversation.id
       // No codebaseId for group runs — the executor accepts undefined; per-codebase
