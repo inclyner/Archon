@@ -103,3 +103,25 @@ export const groupWorktreesResponseSchema = z
 export const deleteGroupWorktreeResponseSchema = z
   .object({ success: z.boolean() })
   .openapi('DeleteWorkspaceGroupWorktreeResponse');
+
+/** POST /api/groups/:name/run body. */
+export const runGroupWorkflowBodySchema = z
+  .object({
+    workflowName: z.string().min(1),
+    message: z.string(),
+    conversationId: z.string().min(1),
+  })
+  .openapi('RunGroupWorkflowBody');
+
+/** POST /api/groups/:name/run response. */
+export const runGroupWorkflowResponseSchema = z
+  .object({
+    accepted: z.boolean(),
+    groupName: z.string(),
+    workflowName: z.string(),
+    branch: z.string(),
+    groupDir: z.string(),
+    conversationId: z.string(),
+    workflowRunId: z.string().nullable(),
+  })
+  .openapi('RunGroupWorkflowResponse');

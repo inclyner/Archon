@@ -27,7 +27,11 @@ import {
   registerRepository,
   ConversationNotFoundError,
   generateAndSetTitle,
+  setUpGroupRun,
 } from '@archon/core';
+import { createWorkflowDeps } from '@archon/core/workflows/store-adapter';
+import { resolveWorkflowName } from '@archon/workflows/router';
+import { executeWorkflow } from '@archon/workflows/executor';
 import { removeWorktree, toRepoPath, toWorktreePath } from '@archon/git';
 import {
   createLogger,
@@ -126,6 +130,8 @@ import {
   deleteGroupResponseSchema,
   groupWorktreesResponseSchema,
   deleteGroupWorktreeResponseSchema,
+  runGroupWorkflowBodySchema,
+  runGroupWorkflowResponseSchema,
 } from './schemas/group.schemas';
 import {
   updateAssistantConfigBodySchema,
@@ -643,6 +649,29 @@ const deleteGroupWorktreeRoute = createRoute({
       content: { 'application/json': { schema: deleteGroupWorktreeResponseSchema } },
       description: 'Removed',
     },
+    404: jsonError('Group not found'),
+    500: jsonError('Server error'),
+  },
+});
+
+const runGroupWorkflowRoute = createRoute({
+  method: 'post',
+  path: '/api/groups/{name}/run',
+  tags: ['Workspace Groups'],
+  summary: 'Run a workflow against a workspace group (web-triggered)',
+  request: {
+    params: groupNameParamsSchema,
+    body: {
+      content: { 'application/json': { schema: runGroupWorkflowBodySchema } },
+      required: true,
+    },
+  },
+  responses: {
+    202: {
+      content: { 'application/json': { schema: runGroupWorkflowResponseSchema } },
+      description: 'Run accepted; events stream over SSE for the conversation',
+    },
+    400: jsonError('Bad request'),
     404: jsonError('Group not found'),
     500: jsonError('Server error'),
   },
@@ -2027,6 +2056,130 @@ export function registerApiRoutes(
     } catch (error) {
       getLog().error({ err: error, name, branch }, 'delete_group_worktree_failed');
       return apiError(c, 500, 'Failed to delete group worktree');
+    }
+  });
+
+  // POST /api/groups/:name/run - Web-triggered workflow run against a group.
+  // Mirrors the CLI's `archon workflow run --group <name>` flow: looks up the
+  // group, creates the on-disk group worktree, pre-substitutes group vars,
+  // and fires executeWorkflow with the WebAdapter. Returns 202 immediately;
+  // events stream to the client over SSE for `conversationId`.
+  registerOpenApiRoute(runGroupWorkflowRoute, async c => {
+    const groupName = c.req.param('name') ?? '';
+    const body = getValidatedBody(c, runGroupWorkflowBodySchema);
+    const { workflowName, message, conversationId } = body;
+
+    try {
+      const group = await workspaceGroupDb.getGroupByName(groupName);
+      if (!group) return apiError(c, 404, `No workspace group named "${groupName}".`);
+
+      // Resolve the workflow definition. We discover from the FIRST member's
+      // source repo (any member would do — workflow YAML files in any of the
+      // children plus bundled defaults are visible). Falls through to bundled
+      // defaults if the member dir has no .archon/workflows/.
+      const memberRows = await workspaceGroupDb.getMembersForGroup(group.id);
+      if (memberRows.length === 0) {
+        return apiError(c, 400, `Group "${groupName}" has no members.`);
+      }
+      const firstCb = await codebaseDb.getCodebase(memberRows[0].codebase_id);
+      if (!firstCb) {
+        return apiError(c, 400, 'First member codebase missing — re-register the group.');
+      }
+      const discoveryCwd = firstCb.default_cwd;
+
+      const { workflows: workflowEntries } = await discoverWorkflowsWithConfig(
+        discoveryCwd,
+        loadConfig
+      );
+      const workflows = workflowEntries.map(ws => ws.workflow);
+      const workflow = resolveWorkflowName(workflowName, workflows);
+      if (!workflow) {
+        return apiError(c, 400, `Workflow "${workflowName}" not found.`);
+      }
+
+      // Persist user message + register conversation DB ID so the SSE bridge
+      // can route events for it. Mirrors the existing run-workflow endpoint.
+      let conv: Awaited<ReturnType<typeof conversationDb.findConversationByPlatformId>> = null;
+      try {
+        conv = await conversationDb.findConversationByPlatformId(conversationId);
+      } catch (e: unknown) {
+        getLog().error({ err: e, conversationId }, 'group_run_conversation_lookup_failed');
+      }
+      if (conv) {
+        try {
+          await messageDb.addMessage(conv.id, 'user', message);
+        } catch (e: unknown) {
+          getLog().error({ err: e, conversationId: conv.id }, 'group_run_message_persist_failed');
+        }
+        webAdapter.setConversationDbId(conversationId, conv.id);
+      }
+
+      // Materialize the group worktree + pre-substitute group vars.
+      const setup = await setUpGroupRun({
+        groupName,
+        workflowName,
+        workflow,
+      });
+
+      // Fire executeWorkflow in the background. Workflow events flow to SSE
+      // automatically through the workflow-bridge subscription wired up in the
+      // web adapter. Failures are logged + surfaced via the SSE error event.
+      const conversationDbId = conv?.id ?? conversationId;
+      void lockManager
+        .acquireLock(conversationId, async () => {
+          webAdapter.emitLockEvent(conversationId, true);
+          try {
+            await executeWorkflow(
+              createWorkflowDeps(),
+              webAdapter,
+              conversationId,
+              setup.worktree.groupDir,
+              setup.resolvedWorkflow,
+              message,
+              conversationDbId
+            );
+          } catch (err) {
+            const e = err as Error;
+            getLog().error(
+              { err: e, groupName, workflowName, conversationId },
+              'group_run_execute_failed'
+            );
+            try {
+              await webAdapter.emitSSE(
+                conversationId,
+                JSON.stringify({
+                  type: 'error',
+                  message: `Group workflow run failed: ${e.message}`,
+                  classification: 'transient',
+                  timestamp: Date.now(),
+                })
+              );
+            } catch {
+              // ignore
+            }
+          } finally {
+            await webAdapter.emitLockEvent(conversationId, false);
+          }
+        })
+        .catch((err: unknown) => {
+          getLog().error({ err, groupName, workflowName, conversationId }, 'group_run_lock_failed');
+        });
+
+      return c.json(
+        {
+          accepted: true,
+          groupName: setup.group.name,
+          workflowName,
+          branch: setup.branch,
+          groupDir: setup.worktree.groupDir,
+          conversationId,
+          workflowRunId: null, // executeWorkflow assigns this internally; surface later via events
+        },
+        202
+      );
+    } catch (error) {
+      getLog().error({ err: error, groupName }, 'group_run_setup_failed');
+      return apiError(c, 500, `Failed to start group run: ${(error as Error).message}`);
     }
   });
 
