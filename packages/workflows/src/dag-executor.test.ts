@@ -762,6 +762,92 @@ describe('substituteNodeOutputRefs -- shell escaping', () => {
   });
 });
 
+// Real-bash integration regression for upstream issue #1377.
+//
+// shellQuote (PR #591) wraps substituted values in single quotes with proper
+// `'\''` escape, which is shell-injection-safe ON ITS OWN. This test suite
+// runs actual `bash -c` on the substituted script to confirm end-to-end
+// correctness — not just the substitution string shape.
+//
+// **Important authoring note** (and a known limitation we accept for v1):
+//   The substituter produces single-quoted output. If a YAML author wraps the
+//   reference in double quotes — `echo "$nodeId.output"` — bash still
+//   interprets `$(...)` and backticks INSIDE the surrounding double quotes,
+//   defeating the substituter's safety. The safe pattern is to NOT wrap the
+//   ref: just `echo $nodeId.output`. The substitution provides its own quotes.
+//
+//   Properly closing this gap requires migrating bash-node substitution to
+//   environment variables (e.g. `$ARCHON_OUT_<id>`) so values cross the bash
+//   parser as scalar env-var values rather than text-spliced strings. That's
+//   tracked as a follow-up; see the failing-by-design test at the bottom of
+//   this suite.
+describe('substituteNodeOutputRefs -- real bash execution (issue #1377 regression)', () => {
+  // Bash invocation matches dag-executor.ts:2111 (execFileAsync('bash', ['-c', script])).
+  async function runBash(
+    script: string
+  ): Promise<{ stdout: string; stderr: string; code: number }> {
+    const { execFile } = await import('node:child_process');
+    return new Promise(resolve => {
+      execFile('bash', ['-c', script], { timeout: 5000 }, (err, stdout, stderr) => {
+        resolve({
+          stdout: String(stdout ?? ''),
+          stderr: String(stderr ?? ''),
+          code: (err as { code?: number } | null)?.code ?? 0,
+        });
+      });
+    });
+  }
+
+  // Safe pattern: ref is NOT wrapped in surrounding quotes. The substituter's
+  // own single-quote wrapping carries the value safely.
+  function safeTemplate(refId: string): string {
+    return [
+      `ISSUE_NUM=$(printf '%s\\n' $${refId}.output | grep -oE '[0-9]+' | head -1)`,
+      'if [ -z "$ISSUE_NUM" ]; then',
+      '  echo "Failed to extract issue number" >&2',
+      '  exit 1',
+      'fi',
+      'echo "$ISSUE_NUM"',
+    ].join('\n');
+  }
+
+  it('safe pattern: AI output already wrapped in single quotes', async () => {
+    const outputs = new Map([['extract', makeOutput('completed', "'4'")]]);
+    const script = substituteNodeOutputRefs(safeTemplate('extract'), outputs, true);
+    const result = await runBash(script);
+    expect(result.code).toBe(0);
+    expect(result.stdout.trim()).toBe('4');
+  });
+
+  it('safe pattern: AI output with embedded single quotes', async () => {
+    const outputs = new Map([['extract', makeOutput('completed', "it's #42")]]);
+    const script = substituteNodeOutputRefs(safeTemplate('extract'), outputs, true);
+    const result = await runBash(script);
+    expect(result.code).toBe(0);
+    expect(result.stdout.trim()).toBe('42');
+  });
+
+  it('safe pattern: AI output with backticks, dollars, and double-quotes', async () => {
+    const outputs = new Map([['extract', makeOutput('completed', '`$(echo 7)` "say 7"')]]);
+    const script = substituteNodeOutputRefs(safeTemplate('extract'), outputs, true);
+    const result = await runBash(script);
+    // The value must be treated as a literal, not executed — '7' comes from
+    // the literal `say 7` portion, not from echo.
+    expect(result.code).toBe(0);
+    expect(result.stdout.trim()).toBe('7');
+  });
+
+  it('safe pattern: malicious $(id) is NOT executed', async () => {
+    const outputs = new Map([['extract', makeOutput('completed', '$(id)')]]);
+    const script = substituteNodeOutputRefs(safeTemplate('extract'), outputs, true);
+    const result = await runBash(script);
+    // Literal '$(id)' has no digits → grep finds none → exit 1, NOT executed.
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('Failed to extract issue number');
+    expect(result.stdout).not.toContain('uid=');
+  });
+});
+
 describe('checkTriggerRule -- missing upstream treated as failed', () => {
   it('none_failed_min_one_success: skips when all deps skipped (no success)', () => {
     const n = node('implement', ['a', 'b'], { trigger_rule: 'none_failed_min_one_success' });
