@@ -52,6 +52,10 @@ export { WorktreeProvider } from './providers/worktree';
 export { getPrState } from './pr-state';
 export type { PrState } from './pr-state';
 
+// --- Workspace groups ---
+export { ensureBranchAcrossMembers, BranchCoherenceError } from './workspace-group-branch';
+export type { BranchCoherenceMember, BranchCoherenceResult } from './workspace-group-branch';
+
 // --- Worktree copy utility ---
 export {
   copyWorktreeFiles,
