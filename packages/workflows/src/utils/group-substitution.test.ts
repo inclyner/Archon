@@ -112,6 +112,18 @@ describe('applyGroupSubstitutionsToWorkflow', () => {
     expect(nodes[1]?.script).toBe('cd /abs/group/service-api && ls');
   });
 
+  it('substitutes the `bash` field on bash nodes (not just `script`)', () => {
+    // Bash nodes carry their command in `bash:`, not `script:`. The schema
+    // uses different field names for bash vs script nodes — both must be
+    // substituted, otherwise $GROUP_DIR in a default bash node would expand
+    // to empty string at execution time.
+    const wf = makeWorkflow([{ id: 'a', bash: 'echo $GROUP at $GROUP_DIR' } as never]);
+
+    const out = applyGroupSubstitutionsToWorkflow(wf, ctx);
+    const nodes = out.nodes as unknown as { bash?: string }[];
+    expect(nodes[0]?.bash).toBe('echo my-platform at /abs/group');
+  });
+
   it('returns a new object — does not mutate the input', () => {
     const wf = makeWorkflow([{ id: 'a', prompt: 'in $GROUP_DIR' }]);
     const out = applyGroupSubstitutionsToWorkflow(wf, ctx);

@@ -83,7 +83,9 @@ export function applyGroupSubstitutions(text: string, ctx?: GroupSubstitutionCon
 function substituteGroupVarsInNode(node: DagNode, ctx?: GroupSubstitutionContext): DagNode {
   // Shallow clone is fine — we only mutate top-level string fields.
   const next: Record<string, unknown> = { ...node };
-  for (const key of ['prompt', 'script', 'command'] as const) {
+  // Bash nodes carry their script in `bash:` (not `script:`); script nodes use `script:`.
+  // Both need substitution so $GROUP_DIR etc. land in the actual subprocess command.
+  for (const key of ['prompt', 'bash', 'script', 'command'] as const) {
     const value = next[key];
     if (typeof value === 'string') {
       next[key] = applyGroupSubstitutions(value, ctx);
