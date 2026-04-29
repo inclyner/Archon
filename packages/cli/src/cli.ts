@@ -59,6 +59,12 @@ import {
   isolationCleanupMergedCommand,
   isolationCompleteCommand,
 } from './commands/isolation';
+import {
+  groupRegisterCommand,
+  groupListCommand,
+  groupShowCommand,
+  groupRemoveCommand,
+} from './commands/group';
 import { continueCommand } from './commands/continue';
 import { chatCommand } from './commands/chat';
 import { setupCommand } from './commands/setup';
@@ -101,6 +107,10 @@ Commands:
   isolation list             List all active worktrees/environments
   isolation cleanup [days]   Remove stale environments (default: 7 days)
   isolation cleanup --merged Remove environments with branches merged into main
+  group register <path>      Register a non-git parent dir as a workspace group
+  group list                 List all workspace groups
+  group show <name>          Show a group's parent path and member repos
+  group remove <name>        Unregister a group (member codebases preserved)
   continue <branch> [msg]    Continue work on an existing worktree with prior context
   complete <branch> [...]    Complete branch lifecycle (remove worktree + branches)
   serve                      Start the web UI server (downloads web UI on first run)
@@ -123,6 +133,7 @@ Options:
   --no-context               Skip context injection for 'continue'
   --port <port>              Override server port for 'serve' (default: 3090)
   --download-only            Download web UI without starting the server
+  --name <name>              Override group name for 'group register' (default: parent dirname)
 
 Examples:
   archon chat "What does the orchestrator do?"
@@ -204,6 +215,7 @@ async function main(): Promise<number> {
         'download-only': { type: 'boolean' },
         scope: { type: 'string' },
         force: { type: 'boolean' },
+        name: { type: 'string' },
       },
       allowPositionals: true,
       strict: false, // Allow unknown flags to pass through
@@ -236,7 +248,7 @@ async function main(): Promise<number> {
   const subcommand = positionals[1];
 
   // Commands that don't require git repo validation
-  const noGitCommands = ['version', 'help', 'setup', 'chat', 'continue', 'serve'];
+  const noGitCommands = ['version', 'help', 'setup', 'chat', 'continue', 'serve', 'group'];
   const requiresGitRepo = !noGitCommands.includes(command ?? '');
 
   try {
@@ -483,6 +495,49 @@ async function main(): Promise<number> {
             return 1;
         }
         break;
+
+      case 'group':
+        switch (subcommand) {
+          case 'register': {
+            const parentPathArg = positionals[2];
+            if (!parentPathArg) {
+              console.error('Usage: archon group register <parent-path> [--name <name>]');
+              return 1;
+            }
+            const groupNameOpt = values.name as string | undefined;
+            return await groupRegisterCommand(parentPathArg, { name: groupNameOpt });
+          }
+
+          case 'list':
+            return await groupListCommand(jsonFlag);
+
+          case 'show': {
+            const showName = positionals[2];
+            if (!showName) {
+              console.error('Usage: archon group show <name> [--json]');
+              return 1;
+            }
+            return await groupShowCommand(showName, jsonFlag);
+          }
+
+          case 'remove': {
+            const removeName = positionals[2];
+            if (!removeName) {
+              console.error('Usage: archon group remove <name>');
+              return 1;
+            }
+            return await groupRemoveCommand(removeName);
+          }
+
+          default:
+            if (subcommand === undefined) {
+              console.error('Missing group subcommand');
+            } else {
+              console.error(`Unknown group subcommand: ${subcommand}`);
+            }
+            console.error('Available: register, list, show, remove');
+            return 1;
+        }
 
       case 'isolation':
         switch (subcommand) {
