@@ -114,7 +114,7 @@ Commands:
   group show <name>          Show a group's parent path and member repos
   group remove <name>        Unregister a group (member codebases preserved)
   group push <name>          Push each member's branch (--branch <name>); add --pr to open PRs
-  group cleanup <name>       Remove group worktrees (--branch X | --all | default >7d, requires --force)
+  group cleanup <name>       Remove group worktrees (--branch X | --all | default >7d; requires --force, add --discard-uncommitted to drop uncommitted work)
   continue <branch> [msg]    Continue work on an existing worktree with prior context
   complete <branch> [...]    Complete branch lifecycle (remove worktree + branches)
   serve                      Start the web UI server (downloads web UI on first run)
@@ -142,6 +142,7 @@ Options:
   --pr                       Open a PR per child after pushing (with 'group push')
   --dry-run                  Print planned actions without executing them
   --auto-pr                  After a successful --group run, push each child branch and open PRs
+  --discard-uncommitted      Pass to 'group cleanup --force' to drop uncommitted edits in worktrees
 
 Examples:
   archon chat "What does the orchestrator do?"
@@ -231,6 +232,7 @@ async function main(): Promise<number> {
         pr: { type: 'boolean' },
         'dry-run': { type: 'boolean' },
         'auto-pr': { type: 'boolean' },
+        'discard-uncommitted': { type: 'boolean' },
       },
       allowPositionals: true,
       strict: false, // Allow unknown flags to pass through
@@ -605,6 +607,7 @@ async function main(): Promise<number> {
               all: values.all as boolean | undefined,
               days,
               force: values.force as boolean | undefined,
+              discardUncommitted: values['discard-uncommitted'] as boolean | undefined,
             });
           }
 

@@ -238,7 +238,13 @@ interface CleanupSelection {
  */
 export async function groupCleanupCommand(
   name: string,
-  options: { branch?: string; all?: boolean; days?: number; force?: boolean } = {}
+  options: {
+    branch?: string;
+    all?: boolean;
+    days?: number;
+    force?: boolean;
+    discardUncommitted?: boolean;
+  } = {}
 ): Promise<number> {
   const group = await workspaceGroupDb.getGroupByName(name);
   if (!group) {
@@ -319,7 +325,9 @@ export async function groupCleanupCommand(
   let failed = 0;
   for (const w of selected) {
     try {
-      await removeGroupWorktree(name, w.branch, memberPaths ?? undefined);
+      await removeGroupWorktree(name, w.branch, memberPaths ?? undefined, {
+        force: options.discardUncommitted ?? false,
+      });
       console.log(`  ✓ removed ${w.branch}`);
       removed++;
     } catch (err) {

@@ -113,18 +113,24 @@ async function copyDirectoryShallow(
 
 /**
  * `git worktree remove` for one path. Best-effort; never throws.
+ *
+ * `force` controls whether `--force` is passed to git. With force=false (the
+ * default for cleanup paths) git refuses to remove a worktree with
+ * uncommitted changes, which is what we want — the user gets a chance to
+ * inspect or commit before destroying work. With force=true (rollback paths
+ * inside createGroupWorktree) we know the worktree is partial and never had
+ * committed changes, so forcing is safe.
  */
 async function removeWorktreeBestEffort(
   sourceRepoPath: string,
   worktreePath: string,
-  context: { reason: string }
+  context: { reason: string; force: boolean }
 ): Promise<void> {
+  const args = ['-C', sourceRepoPath, 'worktree', 'remove'];
+  if (context.force) args.push('--force');
+  args.push(worktreePath);
   try {
-    await execFileAsync(
-      'git',
-      ['-C', sourceRepoPath, 'worktree', 'remove', '--force', worktreePath],
-      { timeout: 30000 }
-    );
+    await execFileAsync('git', args, { timeout: 30000 });
   } catch (err) {
     getLog().warn(
       { sourceRepoPath, worktreePath, err, ...context },
@@ -182,8 +188,48 @@ export async function createGroupWorktree(req: GroupWorktreeRequest): Promise<Gr
       });
     }
 
-    // Step 3: copy parent's non-git files. Skip member subdirs and `.git`.
-    const skipNames = new Set<string>(['.git', ...req.members.map(m => m.relativePath)]);
+    // Step 3: copy parent's non-git files. Skip member subdirs, `.git`, and
+    // well-known heavy/build dirs. Without these, a parent that has run any
+    // language tooling at the top level (npm install, cargo build, etc.) would
+    // recursively copy gigabytes — including a node_modules symlink loop on
+    // pnpm-style setups.
+    //
+    // Why static list rather than reading parent's .gitignore: the parent isn't
+    // a git repo (that's the whole point), so it has no canonical ignore file.
+    // The list below covers the JS/TS/Rust/Python/Go/build stuff most repos use.
+    // Add to .archon/config.yaml workspace-group ignores in a follow-up if real
+    // setups need more.
+    const PARENT_COPY_SKIP_DIRS = new Set([
+      '.git',
+      '.svn',
+      '.hg',
+      'node_modules',
+      '.pnpm-store',
+      '.yarn',
+      'dist',
+      'build',
+      'out',
+      '.next',
+      '.nuxt',
+      '.turbo',
+      '.cache',
+      '.parcel-cache',
+      'target', // rust
+      '__pycache__',
+      '.venv',
+      'venv',
+      '.tox',
+      '.pytest_cache',
+      '.mypy_cache',
+      '.gradle',
+      '.idea',
+      '.vscode',
+      '.DS_Store',
+    ]);
+    const skipNames = new Set<string>([
+      ...PARENT_COPY_SKIP_DIRS,
+      ...req.members.map(m => m.relativePath),
+    ]);
     await copyDirectoryShallow(req.parentPath, groupDir, skipNames);
 
     const memberDirs: Record<string, string> = {};
@@ -198,10 +244,13 @@ export async function createGroupWorktree(req: GroupWorktreeRequest): Promise<Gr
       'workspace_group.create_failed'
     );
 
-    // Roll back member worktrees we already created.
+    // Roll back member worktrees we already created. Force=true is safe here:
+    // these worktrees were just created in this same call, can't have user
+    // edits, and we want rollback to actually complete.
     for (const wt of createdMemberWorktrees) {
       await removeWorktreeBestEffort(wt.sourceRepoPath, wt.worktreePath, {
         reason: 'group-create-rollback',
+        force: true,
       });
     }
     // Roll back any branches we created in step 1.
@@ -250,7 +299,8 @@ export async function createGroupWorktree(req: GroupWorktreeRequest): Promise<Gr
 export async function removeGroupWorktree(
   groupName: string,
   branch: string,
-  members?: readonly { sourceRepoPath: string; relativePath: string }[]
+  members?: readonly { sourceRepoPath: string; relativePath: string }[],
+  options: { force?: boolean } = {}
 ): Promise<void> {
   const groupDir = getWorkspaceGroupWorktreePath(groupName, branch);
 
@@ -265,6 +315,7 @@ export async function removeGroupWorktree(
       if (existsSync(memberDir)) {
         await removeWorktreeBestEffort(m.sourceRepoPath, memberDir, {
           reason: 'group-cleanup',
+          force: options.force ?? false,
         });
       }
     }
