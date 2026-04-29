@@ -7,8 +7,8 @@ import { streamSSE } from 'hono/streaming';
 import { cors } from 'hono/cors';
 import type { WebAdapter } from '../adapters/web';
 import { rm, readFile, writeFile, unlink, mkdir } from 'fs/promises';
-import { readFileSync } from 'fs';
-import { normalize, join, sep, basename } from 'path';
+import { readFileSync, existsSync, statSync, readdirSync } from 'fs';
+import { normalize, join, sep, basename, resolve as resolvePath } from 'path';
 import { randomUUID } from 'crypto';
 import type { Context } from 'hono';
 import type {
@@ -68,6 +68,8 @@ import * as isolationEnvDb from '@archon/core/db/isolation-environments';
 import * as workflowDb from '@archon/core/db/workflows';
 import * as workflowEventDb from '@archon/core/db/workflow-events';
 import * as messageDb from '@archon/core/db/messages';
+import * as workspaceGroupDb from '@archon/core/db/workspace-groups';
+import { listGroupWorktrees, removeGroupWorktree } from '@archon/isolation';
 import { errorSchema } from './schemas/common.schemas';
 import { updateCheckResponseSchema } from './schemas/system.schemas';
 import {
@@ -114,6 +116,17 @@ import {
   codebaseEnvVarParamsSchema,
   envVarMutationResponseSchema,
 } from './schemas/codebase.schemas';
+import {
+  groupListResponseSchema,
+  groupDetailResponseSchema,
+  groupNameParamsSchema,
+  groupBranchParamsSchema,
+  addGroupBodySchema,
+  addGroupResponseSchema,
+  deleteGroupResponseSchema,
+  groupWorktreesResponseSchema,
+  deleteGroupWorktreeResponseSchema,
+} from './schemas/group.schemas';
 import {
   updateAssistantConfigBodySchema,
   updateAssistantConfigResponseSchema,
@@ -532,6 +545,106 @@ const deleteEnvVarRoute = createRoute({
       description: 'Env var deleted',
     },
     404: jsonError('Codebase not found'),
+  },
+});
+
+// =========================================================================
+// Workspace-group route configs
+// =========================================================================
+
+const listGroupsRoute = createRoute({
+  method: 'get',
+  path: '/api/groups',
+  tags: ['Workspace Groups'],
+  summary: 'List registered workspace groups',
+  responses: {
+    200: {
+      content: { 'application/json': { schema: groupListResponseSchema } },
+      description: 'OK',
+    },
+    500: jsonError('Server error'),
+  },
+});
+
+const getGroupRoute = createRoute({
+  method: 'get',
+  path: '/api/groups/{name}',
+  tags: ['Workspace Groups'],
+  summary: 'Get a workspace group by name (with members)',
+  request: { params: groupNameParamsSchema },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: groupDetailResponseSchema } },
+      description: 'Group + members',
+    },
+    404: jsonError('Group not found'),
+    500: jsonError('Server error'),
+  },
+});
+
+const addGroupRoute = createRoute({
+  method: 'post',
+  path: '/api/groups',
+  tags: ['Workspace Groups'],
+  summary: 'Register a non-git parent dir as a workspace group',
+  request: {
+    body: { content: { 'application/json': { schema: addGroupBodySchema } }, required: true },
+  },
+  responses: {
+    201: {
+      content: { 'application/json': { schema: addGroupResponseSchema } },
+      description: 'Group created',
+    },
+    400: jsonError('Bad request (no git children, group name in use, etc.)'),
+    500: jsonError('Server error'),
+  },
+});
+
+const deleteGroupRoute = createRoute({
+  method: 'delete',
+  path: '/api/groups/{name}',
+  tags: ['Workspace Groups'],
+  summary: 'Unregister a workspace group (member codebases preserved)',
+  request: { params: groupNameParamsSchema },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: deleteGroupResponseSchema } },
+      description: 'Removed',
+    },
+    404: jsonError('Group not found'),
+    500: jsonError('Server error'),
+  },
+});
+
+const listGroupWorktreesRoute = createRoute({
+  method: 'get',
+  path: '/api/groups/{name}/worktrees',
+  tags: ['Workspace Groups'],
+  summary: 'List on-disk worktrees for a workspace group',
+  request: { params: groupNameParamsSchema },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: groupWorktreesResponseSchema } },
+      description: 'Worktrees',
+    },
+    404: jsonError('Group not found'),
+    500: jsonError('Server error'),
+  },
+});
+
+const deleteGroupWorktreeRoute = createRoute({
+  method: 'delete',
+  path: '/api/groups/{name}/worktrees/{branch}',
+  tags: ['Workspace Groups'],
+  summary: 'Remove one group worktree (and the per-member git worktrees inside it)',
+  request: { params: groupBranchParamsSchema },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: deleteGroupWorktreeResponseSchema } },
+      description: 'Removed',
+    },
+    404: jsonError('Group not found'),
+    500: jsonError('Server error'),
   },
 });
 
@@ -1724,6 +1837,196 @@ export function registerApiRoutes(
     } catch (error) {
       getLog().error({ err: error, codebaseId: id, key }, 'delete_env_var_failed');
       return apiError(c, 500, 'Failed to delete env var');
+    }
+  });
+
+  // =========================================================================
+  // Workspace-group endpoints
+  // =========================================================================
+
+  // GET /api/groups - List groups
+  registerOpenApiRoute(listGroupsRoute, async c => {
+    try {
+      const groups = await workspaceGroupDb.listGroups();
+      return c.json({ groups: groups.map(g => ({ ...g, created_at: String(g.created_at) })) });
+    } catch (error) {
+      getLog().error({ err: error }, 'list_groups_failed');
+      return apiError(c, 500, 'Failed to list groups');
+    }
+  });
+
+  // GET /api/groups/:name - Group + members
+  registerOpenApiRoute(getGroupRoute, async c => {
+    const name = c.req.param('name') ?? '';
+    try {
+      const group = await workspaceGroupDb.getGroupByName(name);
+      if (!group) return apiError(c, 404, 'Group not found');
+      const members = await workspaceGroupDb.getMembersForGroup(group.id);
+      return c.json({
+        group: { ...group, created_at: String(group.created_at) },
+        members: members.map(m => ({ ...m })),
+      });
+    } catch (error) {
+      getLog().error({ err: error, name }, 'get_group_failed');
+      return apiError(c, 500, 'Failed to get group');
+    }
+  });
+
+  // POST /api/groups - Register a new group from a parent dir
+  registerOpenApiRoute(addGroupRoute, async c => {
+    const body = getValidatedBody(c, addGroupBodySchema);
+    try {
+      const parentPath = resolvePath(body.parentPath);
+
+      if (!existsSync(parentPath)) {
+        return apiError(c, 400, `Parent path does not exist: ${parentPath}`);
+      }
+      if (!statSync(parentPath).isDirectory()) {
+        return apiError(c, 400, `Parent path is not a directory: ${parentPath}`);
+      }
+
+      const groupName = body.name ?? basename(parentPath);
+
+      const existing = await workspaceGroupDb.getGroupByName(groupName);
+      if (existing) {
+        return apiError(c, 400, `Group "${groupName}" already exists at ${existing.parent_path}.`);
+      }
+
+      // Walk one level looking for git children.
+      const entries = readdirSync(parentPath, { withFileTypes: true });
+      const children: string[] = [];
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        if (entry.name.startsWith('.')) continue;
+        if (existsSync(join(parentPath, entry.name, '.git'))) {
+          children.push(entry.name);
+        }
+      }
+      children.sort();
+      if (children.length === 0) {
+        return apiError(c, 400, `No git repositories found one level under ${parentPath}.`);
+      }
+
+      // Register each git child via the shared registerRepository helper.
+      const summary: {
+        relativePath: string;
+        codebaseId: string | null;
+        name: string | null;
+        alreadyExisted: boolean;
+        error: string | null;
+      }[] = [];
+      for (const child of children) {
+        const childPath = join(parentPath, child);
+        try {
+          const r = await registerRepository(childPath);
+          summary.push({
+            relativePath: child,
+            codebaseId: r.codebaseId,
+            name: r.name,
+            alreadyExisted: r.alreadyExisted ?? false,
+            error: null,
+          });
+        } catch (err) {
+          summary.push({
+            relativePath: child,
+            codebaseId: null,
+            name: null,
+            alreadyExisted: false,
+            error: (err as Error).message,
+          });
+        }
+      }
+
+      const successes = summary.filter(s => s.codebaseId !== null);
+      if (successes.length === 0) {
+        return apiError(c, 400, 'Failed to register any child repos.');
+      }
+
+      const group = await workspaceGroupDb.createGroup({
+        name: groupName,
+        parent_path: parentPath,
+      });
+      const members: { group_id: string; codebase_id: string; relative_path: string }[] = [];
+      for (const s of successes) {
+        if (!s.codebaseId) continue;
+        const m = await workspaceGroupDb.addMember({
+          group_id: group.id,
+          codebase_id: s.codebaseId,
+          relative_path: s.relativePath,
+        });
+        members.push(m);
+      }
+
+      return c.json(
+        {
+          group: { ...group, created_at: String(group.created_at) },
+          members,
+          summary,
+        },
+        201
+      );
+    } catch (error) {
+      getLog().error({ err: error }, 'add_group_failed');
+      return apiError(c, 500, `Failed to add group: ${(error as Error).message}`);
+    }
+  });
+
+  // DELETE /api/groups/:name - Unregister (codebases preserved)
+  registerOpenApiRoute(deleteGroupRoute, async c => {
+    const name = c.req.param('name') ?? '';
+    try {
+      const group = await workspaceGroupDb.getGroupByName(name);
+      if (!group) return apiError(c, 404, 'Group not found');
+      await workspaceGroupDb.removeGroup(group.id);
+      return c.json({ success: true });
+    } catch (error) {
+      getLog().error({ err: error, name }, 'delete_group_failed');
+      return apiError(c, 500, 'Failed to delete group');
+    }
+  });
+
+  // GET /api/groups/:name/worktrees - List on-disk group worktrees
+  registerOpenApiRoute(listGroupWorktreesRoute, async c => {
+    const name = c.req.param('name') ?? '';
+    try {
+      const group = await workspaceGroupDb.getGroupByName(name);
+      if (!group) return apiError(c, 404, 'Group not found');
+      const all = await listGroupWorktrees();
+      const filtered = all.filter((w: { groupName: string }) => w.groupName === name);
+      return c.json({ worktrees: filtered });
+    } catch (error) {
+      getLog().error({ err: error, name }, 'list_group_worktrees_failed');
+      return apiError(c, 500, 'Failed to list group worktrees');
+    }
+  });
+
+  // DELETE /api/groups/:name/worktrees/:branch - Remove one group worktree
+  registerOpenApiRoute(deleteGroupWorktreeRoute, async c => {
+    const name = c.req.param('name') ?? '';
+    const branch = c.req.param('branch') ?? '';
+    try {
+      const group = await workspaceGroupDb.getGroupByName(name);
+      if (!group) return apiError(c, 404, 'Group not found');
+
+      // Resolve member source-repo paths so we can call git worktree remove
+      // properly (avoids dangling pointers in source repos).
+      const memberRows = await workspaceGroupDb.getMembersForGroup(group.id);
+      const members: { sourceRepoPath: string; relativePath: string }[] = [];
+      let allMembersResolved = true;
+      for (const m of memberRows) {
+        const cb = await codebaseDb.getCodebase(m.codebase_id);
+        if (!cb) {
+          allMembersResolved = false;
+          break;
+        }
+        members.push({ sourceRepoPath: cb.default_cwd, relativePath: m.relative_path });
+      }
+
+      await removeGroupWorktree(name, branch, allMembersResolved ? members : undefined);
+      return c.json({ success: true });
+    } catch (error) {
+      getLog().error({ err: error, name, branch }, 'delete_group_worktree_failed');
+      return apiError(c, 500, 'Failed to delete group worktree');
     }
   });
 

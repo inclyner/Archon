@@ -149,6 +149,7 @@
         "@archon/adapters": "workspace:*",
         "@archon/core": "workspace:*",
         "@archon/git": "workspace:*",
+        "@archon/isolation": "workspace:*",
         "@archon/paths": "workspace:*",
         "@archon/providers": "workspace:*",
         "@archon/workflows": "workspace:*",
