@@ -336,6 +336,22 @@ export class SqliteAdapter implements IDatabase {
         created_at TEXT DEFAULT (datetime('now'))
       );
 
+      -- Workspace groups table (parent dir + N sibling git repos, one cwd for the group)
+      CREATE TABLE IF NOT EXISTS remote_agent_workspace_groups (
+        id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+        name TEXT NOT NULL UNIQUE,
+        parent_path TEXT NOT NULL,
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+
+      -- Workspace group members (junction: group ↔ codebase)
+      CREATE TABLE IF NOT EXISTS remote_agent_workspace_group_members (
+        group_id TEXT NOT NULL REFERENCES remote_agent_workspace_groups(id) ON DELETE CASCADE,
+        codebase_id TEXT NOT NULL REFERENCES remote_agent_codebases(id) ON DELETE CASCADE,
+        relative_path TEXT NOT NULL,
+        PRIMARY KEY (group_id, codebase_id)
+      );
+
       -- Messages table (conversation history for Web UI)
       CREATE TABLE IF NOT EXISTS remote_agent_messages (
         id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
@@ -358,6 +374,7 @@ export class SqliteAdapter implements IDatabase {
       CREATE INDEX IF NOT EXISTS idx_workflow_events_run_id ON remote_agent_workflow_events(workflow_run_id);
       CREATE INDEX IF NOT EXISTS idx_workflow_events_type ON remote_agent_workflow_events(event_type);
       CREATE INDEX IF NOT EXISTS idx_messages_conversation_id ON remote_agent_messages(conversation_id, created_at ASC);
+      CREATE INDEX IF NOT EXISTS idx_workspace_group_members_codebase ON remote_agent_workspace_group_members(codebase_id);
       CREATE INDEX IF NOT EXISTS idx_workflow_runs_parent_conv ON remote_agent_workflow_runs(parent_conversation_id);
       CREATE INDEX IF NOT EXISTS idx_conversations_hidden ON remote_agent_conversations(hidden);
       DROP INDEX IF EXISTS idx_conversations_codebase;

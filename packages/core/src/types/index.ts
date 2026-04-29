@@ -64,6 +64,25 @@ export interface Codebase {
   updated_at: Date;
 }
 
+/**
+ * A WorkspaceGroup represents a non-git parent directory containing N sibling
+ * git repositories. Used for cross-repo workflow runs where the AI sees and
+ * edits all members in one session, rather than fanning out N independent runs.
+ */
+export interface WorkspaceGroup {
+  id: string;
+  name: string;
+  parent_path: string;
+  created_at: Date;
+}
+
+export interface WorkspaceGroupMember {
+  group_id: string;
+  codebase_id: string;
+  /** Subdirectory name of the member within the group's parent_path (basename). */
+  relative_path: string;
+}
+
 export const sessionMetadataSchema = z
   .object({
     lastCommand: z.string().optional(),
