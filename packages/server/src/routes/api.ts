@@ -2130,28 +2130,55 @@ export function registerApiRoutes(
       const group = await workspaceGroupDb.getGroupByName(groupName);
       if (!group) return apiError(c, 404, `No workspace group named "${groupName}".`);
 
-      // Resolve the workflow definition. We discover from the FIRST member's
-      // source repo (any member would do — workflow YAML files in any of the
-      // children plus bundled defaults are visible). Falls through to bundled
-      // defaults if the member dir has no .archon/workflows/.
+      // Resolve the workflow definition by union-discovering from EVERY
+      // member's source repo. Repo-scoped workflows in any member should be
+      // visible to a group run regardless of which member happens to be
+      // first. Bundled defaults are visible from any cwd.
+      //
+      // Dedupe by name with first-seen-wins. If the same workflow name
+      // appears in two members with different definitions we log a debug
+      // event so dupes aren't silent — still pick a winner deterministically
+      // (whichever member came first in the DB-ordered member list).
       const memberRows = await workspaceGroupDb.getMembersForGroup(group.id);
       if (memberRows.length === 0) {
         return apiError(c, 400, `Group "${groupName}" has no members.`);
       }
-      const firstCb = await codebaseDb.getCodebase(memberRows[0].codebase_id);
-      if (!firstCb) {
-        return apiError(c, 400, 'First member codebase missing — re-register the group.');
-      }
-      const discoveryCwd = firstCb.default_cwd;
 
-      const { workflows: workflowEntries } = await discoverWorkflowsWithConfig(
-        discoveryCwd,
-        loadConfig
-      );
-      const workflows = workflowEntries.map(ws => ws.workflow);
+      const allWorkflowsByName = new Map<
+        string,
+        { workflow: ReturnType<typeof resolveWorkflowName> & object; member: string }
+      >();
+      let anyMemberDiscovered = false;
+      for (const m of memberRows) {
+        const cb = await codebaseDb.getCodebase(m.codebase_id);
+        if (!cb) continue;
+        anyMemberDiscovered = true;
+        const { workflows: entries } = await discoverWorkflowsWithConfig(
+          cb.default_cwd,
+          loadConfig
+        );
+        for (const ws of entries) {
+          if (allWorkflowsByName.has(ws.workflow.name)) {
+            getLog().debug(
+              { workflowName: ws.workflow.name, member: m.relative_path },
+              'group_run.duplicate_workflow_skipped'
+            );
+            continue;
+          }
+          allWorkflowsByName.set(ws.workflow.name, {
+            workflow: ws.workflow as ReturnType<typeof resolveWorkflowName> & object,
+            member: m.relative_path,
+          });
+        }
+      }
+      if (!anyMemberDiscovered) {
+        return apiError(c, 400, 'No member codebases found — re-register the group.');
+      }
+
+      const workflows = [...allWorkflowsByName.values()].map(v => v.workflow);
       const workflow = resolveWorkflowName(workflowName, workflows);
       if (!workflow) {
-        return apiError(c, 400, `Workflow "${workflowName}" not found.`);
+        return apiError(c, 400, `Workflow "${workflowName}" not found in any group member.`);
       }
 
       // Persist user message + register conversation DB ID so the SSE bridge
