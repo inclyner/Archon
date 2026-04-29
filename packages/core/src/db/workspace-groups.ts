@@ -22,6 +22,38 @@ import type { WorkspaceGroup, WorkspaceGroupMember } from '../types';
  */
 type QueryFn = <T>(sql: string, params?: unknown[]) => Promise<QueryResult<T>>;
 
+/**
+ * Workspace group names must be safe to use as a directory segment under
+ * `~/.archon/workspace-groups/<name>/`. We restrict to the same character
+ * class as standard "name slug" patterns, anchored to start/end, with no
+ * leading dot/dash/underscore (avoids hidden dirs and looks-like-flag CLI
+ * confusion). Max 64 chars for sanity.
+ *
+ * Allowed: alphanumerics, dots, hyphens, underscores. Must start with an
+ * alphanumeric. Must not contain `..` (path traversal).
+ *
+ * Returns `null` if valid, otherwise a human-readable rejection reason.
+ */
+const WORKSPACE_GROUP_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+export function validateWorkspaceGroupName(name: string): string | null {
+  if (name?.trim() !== name) {
+    return 'Group name cannot be empty or have leading/trailing whitespace.';
+  }
+  if (name.length > 64) {
+    return `Group name "${name}" is longer than 64 characters.`;
+  }
+  if (name.includes('..')) {
+    return `Group name "${name}" cannot contain ".." (path traversal).`;
+  }
+  if (!WORKSPACE_GROUP_NAME_RE.test(name)) {
+    return (
+      `Group name "${name}" must start with a letter or digit and contain only ` +
+      'letters, digits, dots, hyphens, and underscores.'
+    );
+  }
+  return null;
+}
+
 export async function createGroup(
   data: { name: string; parent_path: string },
   query: QueryFn = pool.query

@@ -47,6 +47,7 @@ export * as isolationEnvDb from './db/isolation-environments';
 export * as workflowDb from './db/workflows';
 export * as messageDb from './db/messages';
 export * as workspaceGroupDb from './db/workspace-groups';
+export { validateWorkspaceGroupName } from './db/workspace-groups';
 export type { WorkspaceGroup, WorkspaceGroupMember } from './types';
 
 // Re-export SessionNotFoundError for error handling

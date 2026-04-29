@@ -14,6 +14,7 @@ import {
   registerRepository,
   codebaseDb,
   pool,
+  validateWorkspaceGroupName,
   type RegisterResult,
 } from '@archon/core';
 import type { WorkspaceGroupMember } from '@archon/core';
@@ -71,6 +72,17 @@ export async function groupRegisterCommand(
   }
 
   const groupName = options.name ?? basename(parentPath);
+
+  const nameError = validateWorkspaceGroupName(groupName);
+  if (nameError) {
+    if (!options.name) {
+      // The bad name came from basename(parent-path) — user can override.
+      console.error(`Error: ${nameError}\n  Pass --name to give the group a valid name.`);
+    } else {
+      console.error(`Error: ${nameError}`);
+    }
+    return 1;
+  }
 
   const existing = await workspaceGroupDb.getGroupByName(groupName);
   if (existing) {

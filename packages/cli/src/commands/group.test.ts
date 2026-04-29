@@ -187,6 +187,17 @@ describe('groupRegisterCommand', () => {
     }
   });
 
+  it('rejects an invalid group name (path traversal via --name)', async () => {
+    const parent = makeTempParent([{ name: 'svc-a', isGitRepo: true }]);
+    try {
+      const code = await groupRegisterCommand(parent, { name: '../etc' });
+      expect(code).toBe(1);
+      expect(mockCreateGroup).not.toHaveBeenCalled();
+    } finally {
+      cleanup(parent);
+    }
+  });
+
   it('errors when group name already exists', async () => {
     mockGetGroupByName.mockImplementationOnce(() =>
       Promise.resolve({

@@ -78,6 +78,15 @@ mock.module('@archon/core', () => ({
   loadConfig: mock(async () => ({})),
   cloneRepository: mock(async () => ({ codebaseId: 'x', alreadyExisted: false })),
   registerRepository: mockRegisterRepository,
+  validateWorkspaceGroupName: (name: string) => {
+    // Mirror the production rule for the path-traversal test case. Anything
+    // not matching `^[A-Za-z0-9][A-Za-z0-9._-]*$` is rejected; tests rely on
+    // the rejection path for invalid names like '../etc'.
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name) || name.includes('..')) {
+      return `Group name "${name}" is invalid.`;
+    }
+    return null;
+  },
   // Stand-in for pool.withTransaction: just calls the inner fn with a fake
   // query function that delegates to whatever the workspaceGroupDb mocks return.
   // The shape of the inner query doesn't matter to the test — workspaceGroupDb
@@ -331,6 +340,22 @@ describe('POST /api/groups', () => {
       body: JSON.stringify({ parentPath: '/tmp/definitely-not-here-' + Date.now() }),
     });
     expect(res.status).toBe(400);
+  });
+
+  test('400 when --name is path-traversal-shaped', async () => {
+    parent = makeParentWith(['svc-a']);
+    try {
+      const app = makeApp();
+      const res = await app.request('/api/groups', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ parentPath: parent, name: '../etc' }),
+      });
+      expect(res.status).toBe(400);
+      expect(mockCreateGroup).not.toHaveBeenCalled();
+    } finally {
+      safeRm(parent);
+    }
   });
 
   test('400 when no git children', async () => {

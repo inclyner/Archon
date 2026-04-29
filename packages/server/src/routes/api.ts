@@ -29,6 +29,7 @@ import {
   generateAndSetTitle,
   setUpGroupRun,
   pool,
+  validateWorkspaceGroupName,
 } from '@archon/core';
 import { createWorkflowDeps } from '@archon/core/workflows/store-adapter';
 import { resolveWorkflowName } from '@archon/workflows/router';
@@ -1916,6 +1917,11 @@ export function registerApiRoutes(
       }
 
       const groupName = body.name ?? basename(parentPath);
+
+      const nameError = validateWorkspaceGroupName(groupName);
+      if (nameError) {
+        return apiError(c, 400, nameError);
+      }
 
       const existing = await workspaceGroupDb.getGroupByName(groupName);
       if (existing) {
