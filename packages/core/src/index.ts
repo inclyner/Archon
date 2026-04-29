@@ -59,6 +59,10 @@ export { SessionNotFoundError } from './db/sessions';
 // Store adapter (bridges core DB to @archon/workflows IWorkflowStore)
 export { createWorkflowStore } from './workflows/store-adapter';
 
+// Group-run setup helper (shared by CLI --group and server group-run endpoint)
+export { setUpGroupRun } from './workflows/group-run';
+export type { GroupRunSetup, GroupRunMember, SetUpGroupRunOpts } from './workflows/group-run';
+
 // Workflow Events DB
 export * as workflowEventDb from './db/workflow-events';
 

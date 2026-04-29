@@ -7,9 +7,8 @@ import {
   loadRepoConfig,
   generateAndSetTitle,
   createWorkflowStore,
-  workspaceGroupDb,
+  setUpGroupRun,
 } from '@archon/core';
-import { createGroupWorktree, type GroupWorktreeMember } from '@archon/isolation';
 import { WORKFLOW_EVENT_TYPES, type WorkflowEventType } from '@archon/workflows/store';
 import { configureIsolation, getIsolationProvider } from '@archon/isolation';
 import { createLogger, getArchonHome } from '@archon/paths';
@@ -18,10 +17,6 @@ import { createWorkflowDeps } from '@archon/core/workflows/store-adapter';
 import { discoverWorkflowsWithConfig } from '@archon/workflows/workflow-discovery';
 import { resolveWorkflowName } from '@archon/workflows/router';
 import { executeWorkflow } from '@archon/workflows/executor';
-import {
-  applyGroupSubstitutionsToWorkflow,
-  type GroupSubstitutionContext,
-} from '@archon/workflows/utils/group-substitution';
 import { pushGroupWorktree } from './group-push';
 import {
   getWorkflowEventEmitter,
@@ -807,86 +802,30 @@ async function runWorkflowAgainstGroup(
     throw new Error('runWorkflowAgainstGroup called without options.group');
   }
 
-  const group = await workspaceGroupDb.getGroupByName(groupName);
-  if (!group) {
-    throw new Error(
-      `No workspace group named "${groupName}". Run \`archon group list\` to see registered groups.`
-    );
-  }
-
-  const memberRows = await workspaceGroupDb.getMembersForGroup(group.id);
-  if (memberRows.length === 0) {
-    throw new Error(
-      `Group "${groupName}" has no members. Re-register with \`archon group register ${group.parent_path}\`.`
-    );
-  }
-
-  // Resolve each member's source repo path via codebases table.
-  const members: GroupWorktreeMember[] = [];
-  for (const m of memberRows) {
-    const cb = await codebaseDb.getCodebase(m.codebase_id);
-    if (!cb) {
-      throw new Error(
-        `Group member references missing codebase ${m.codebase_id} (relative_path="${m.relative_path}").\n` +
-          'The codebase row was likely deleted out from under the group. ' +
-          `Re-register the group with \`archon group register ${group.parent_path}\`.`
-      );
-    }
-    members.push({
-      codebaseId: cb.id,
-      sourceRepoPath: cb.default_cwd,
-      relativePath: m.relative_path,
-    });
-  }
-
-  // Pick a base branch from the FIRST member. Personal-use scope: assumes all
-  // members share a sensible default branch. If detection fails, we fall back
-  // to "main" (creating a branch from a non-existent ref will fail loudly
-  // inside the worktree provider — the user will see a clear error).
-  let baseBranch = 'main';
-  try {
-    baseBranch = await git.getDefaultBranch(git.toRepoPath(members[0].sourceRepoPath));
-  } catch (err) {
-    getLog().warn(
-      { err: err as Error, sourceRepoPath: members[0].sourceRepoPath },
-      'cli.group.base_branch_detect_failed'
-    );
-  }
-
-  // Auto-generate a branch name. Mirrors the single-repo convention.
-  const branch = `${workflowName}-${Date.now()}`;
-
-  console.log(`Running workflow: ${workflowName}`);
-  console.log(`Workspace group: ${groupName} (${memberRows.length} members)`);
-  console.log(`Branch: ${branch} (base: ${baseBranch})`);
-  console.log('');
-
-  const worktree = await createGroupWorktree({
-    groupName: group.name,
-    parentPath: group.parent_path,
+  const setup = await setUpGroupRun({
+    groupName,
+    workflowName,
+    workflow,
+  });
+  const {
+    group,
     members,
     branch,
     baseBranch,
-  });
+    worktree,
+    resolvedWorkflow: groupResolvedWorkflow,
+  } = setup;
+
+  console.log(`Running workflow: ${workflowName}`);
+  console.log(`Workspace group: ${groupName} (${members.length} members)`);
+  console.log(`Branch: ${branch} (base: ${baseBranch})`);
+  console.log('');
 
   console.log(`Group worktree: ${worktree.groupDir}`);
   for (const m of members) {
     console.log(`  ${m.relativePath} → ${worktree.memberDirs[m.codebaseId] ?? '(missing)'}`);
   }
   console.log('');
-
-  // Pre-substitute group variables in the workflow definition. Touches
-  // prompt/script/command/args strings on every node so $GROUP, $GROUP_DIR,
-  // $REPOS, and $REPO_<NAME>_DIR are resolved before the executor sees them.
-  const groupContext: GroupSubstitutionContext = {
-    groupName: group.name,
-    groupDir: worktree.groupDir,
-    members: members.map(m => ({
-      relativePath: m.relativePath,
-      memberDir: worktree.memberDirs[m.codebaseId] ?? '',
-    })),
-  };
-  const groupResolvedWorkflow = applyGroupSubstitutionsToWorkflow(workflow, groupContext);
 
   // Standard CLI plumbing: adapter, conversation, event subscription.
   const adapter = new CLIAdapter();

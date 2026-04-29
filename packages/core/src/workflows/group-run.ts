@@ -1,0 +1,152 @@
+/**
+ * Shared setup for running a workflow against a registered workspace group.
+ *
+ * Both the CLI (archon workflow run --group <name>) and the server endpoint
+ * (POST /api/workflows/:name/run-group) need the same sequence:
+ *
+ *   1. Look up the group and its members.
+ *   2. Resolve each member's source repo path via the codebases table.
+ *   3. Detect a base branch from the first member.
+ *   4. Generate a branch name.
+ *   5. Create the group worktree on disk (N git worktrees + parent file copy).
+ *   6. Pre-substitute $GROUP / $GROUP_DIR / $REPOS / $REPO_<NAME>_DIR into
+ *      every node's prompt/bash/script/command field.
+ *
+ * This module returns everything the caller needs to invoke executeWorkflow
+ * and stream events. The platform-specific bits (adapter, conversation
+ * creation, event subscription, post-run side effects like --auto-pr) stay
+ * with the caller.
+ */
+import { getDefaultBranch, toRepoPath } from '@archon/git';
+import { createGroupWorktree, type GroupWorktreeResult } from '@archon/isolation';
+import {
+  applyGroupSubstitutionsToWorkflow,
+  type GroupSubstitutionContext,
+} from '@archon/workflows/utils/group-substitution';
+import type { WorkflowDefinition } from '@archon/workflows/schemas/workflow';
+import { createLogger } from '@archon/paths';
+import * as workspaceGroupDb from '../db/workspace-groups';
+import * as codebaseDb from '../db/codebases';
+import type { WorkspaceGroup } from '../types';
+
+let cachedLog: ReturnType<typeof createLogger> | undefined;
+function getLog(): ReturnType<typeof createLogger> {
+  if (!cachedLog) cachedLog = createLogger('core.group-run');
+  return cachedLog;
+}
+
+export interface GroupRunMember {
+  codebaseId: string;
+  sourceRepoPath: string;
+  relativePath: string;
+}
+
+export interface GroupRunSetup {
+  group: WorkspaceGroup;
+  members: GroupRunMember[];
+  branch: string;
+  baseBranch: string;
+  worktree: GroupWorktreeResult;
+  groupContext: GroupSubstitutionContext;
+  /** Workflow definition with group vars pre-substituted. Pass this — not the original — to executeWorkflow. */
+  resolvedWorkflow: WorkflowDefinition;
+}
+
+export interface SetUpGroupRunOpts {
+  groupName: string;
+  workflowName: string;
+  workflow: WorkflowDefinition;
+  /**
+   * Optional explicit branch name. When omitted, generates `<workflowName>-<timestamp>`
+   * (matching the single-repo convention).
+   */
+  branch?: string;
+}
+
+/**
+ * Validates the group + members, creates the on-disk worktree, and pre-substitutes
+ * the workflow definition. The returned `resolvedWorkflow` is what the caller
+ * should hand to executeWorkflow; cwd should be `setup.worktree.groupDir`.
+ *
+ * Throws on:
+ *  - unknown group
+ *  - empty group (no members)
+ *  - missing codebase row referenced by a member junction
+ *  - any failure inside createGroupWorktree (which itself rolls back partial state)
+ */
+export async function setUpGroupRun(opts: SetUpGroupRunOpts): Promise<GroupRunSetup> {
+  const { groupName, workflowName, workflow } = opts;
+
+  const group = await workspaceGroupDb.getGroupByName(groupName);
+  if (!group) {
+    throw new Error(
+      `No workspace group named "${groupName}". Register it first via the CLI or POST /api/groups.`
+    );
+  }
+
+  const memberRows = await workspaceGroupDb.getMembersForGroup(group.id);
+  if (memberRows.length === 0) {
+    throw new Error(
+      `Group "${groupName}" has no members. Re-register the group from ${group.parent_path}.`
+    );
+  }
+
+  const members: GroupRunMember[] = [];
+  for (const m of memberRows) {
+    const cb = await codebaseDb.getCodebase(m.codebase_id);
+    if (!cb) {
+      throw new Error(
+        `Group member references missing codebase ${m.codebase_id} ` +
+          `(relative_path="${m.relative_path}"). The codebase row was likely deleted out ` +
+          `from under the group. Re-register the group from ${group.parent_path}.`
+      );
+    }
+    members.push({
+      codebaseId: cb.id,
+      sourceRepoPath: cb.default_cwd,
+      relativePath: m.relative_path,
+    });
+  }
+
+  // Pick base branch from first member. If detection fails, fall back to "main" —
+  // worktree creation will fail loudly later if "main" doesn't exist either.
+  let baseBranch = 'main';
+  try {
+    baseBranch = await getDefaultBranch(toRepoPath(members[0].sourceRepoPath));
+  } catch (err) {
+    getLog().warn(
+      { err: err as Error, sourceRepoPath: members[0].sourceRepoPath },
+      'core.group_run.base_branch_detect_failed'
+    );
+  }
+
+  const branch = opts.branch ?? `${workflowName}-${String(Date.now())}`;
+
+  const worktree = await createGroupWorktree({
+    groupName: group.name,
+    parentPath: group.parent_path,
+    members,
+    branch,
+    baseBranch,
+  });
+
+  const groupContext: GroupSubstitutionContext = {
+    groupName: group.name,
+    groupDir: worktree.groupDir,
+    members: members.map(m => ({
+      relativePath: m.relativePath,
+      memberDir: worktree.memberDirs[m.codebaseId] ?? '',
+    })),
+  };
+  const resolvedWorkflow = applyGroupSubstitutionsToWorkflow(workflow, groupContext);
+
+  return {
+    group,
+    members,
+    branch,
+    baseBranch,
+    worktree,
+    groupContext,
+    resolvedWorkflow,
+  };
+}
