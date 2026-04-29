@@ -1170,6 +1170,43 @@ describe('CommandHandler', () => {
         expect(result.workflow?.definition.name).toBe('archon-assist');
       });
 
+      test('should parse --group out of args and surface it on the result', async () => {
+        spyDiscoverWorkflows.mockResolvedValueOnce({
+          workflows: [
+            makeTestWorkflowWithSource({ name: 'archon-assist', description: 'General assistant' }),
+          ],
+          errors: [],
+        });
+
+        const result = await handleCommand(
+          conversationWithCodebase,
+          '/workflow run assist --group my-platform "do a cross-repo thing"'
+        );
+
+        expect(result.success).toBe(true);
+        expect(result.workflow?.group).toBe('my-platform');
+        // --group <value> tokens are stripped from args; the parser also strips
+        // surrounding quotes from the user message.
+        expect(result.workflow?.args).toBe('do a cross-repo thing');
+      });
+
+      test('should error when --group is missing its value', async () => {
+        spyDiscoverWorkflows.mockResolvedValueOnce({
+          workflows: [
+            makeTestWorkflowWithSource({ name: 'archon-assist', description: 'General assistant' }),
+          ],
+          errors: [],
+        });
+
+        const result = await handleCommand(
+          conversationWithCodebase,
+          '/workflow run assist --group'
+        );
+
+        expect(result.success).toBe(false);
+        expect(result.message).toContain('--group <group-name>');
+      });
+
       test('should match workflow name via substring match', async () => {
         spyDiscoverWorkflows.mockResolvedValueOnce({
           workflows: [

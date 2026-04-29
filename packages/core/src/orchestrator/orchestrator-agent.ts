@@ -38,6 +38,7 @@ import type {
   WorkflowLoadError,
 } from '@archon/workflows/schemas/workflow';
 import { createWorkflowDeps } from '../workflows/store-adapter';
+import { setUpGroupRun } from '../workflows/group-run';
 import { loadConfig } from '../config/config-loader';
 import type { MergedConfig } from '../config/config-types';
 import { generateAndSetTitle } from '../services/title-generator';
@@ -726,14 +727,25 @@ export async function handleMessage(
         await platform.sendMessage(conversationId, result.message);
 
         if (result.workflow) {
-          await handleWorkflowRunCommand(
-            platform,
-            conversationId,
-            conversation,
-            result.workflow.definition,
-            result.workflow.args ?? message,
-            isolationHints
-          );
+          if (result.workflow.group) {
+            await handleGroupWorkflowRunCommand(
+              platform,
+              conversationId,
+              conversation,
+              result.workflow.definition,
+              result.workflow.args ?? message,
+              result.workflow.group
+            );
+          } else {
+            await handleWorkflowRunCommand(
+              platform,
+              conversationId,
+              conversation,
+              result.workflow.definition,
+              result.workflow.args ?? message,
+              isolationHints
+            );
+          }
         }
         return;
       }
@@ -1509,4 +1521,75 @@ async function handleWorkflowRunCommand(
     conversationId,
     `Which project should this workflow run on?\n\n${projectList}\n\nReply with the project name, or use: /workflow run ${workflow.name} --project <name> "${userMessage}"`
   );
+}
+
+/**
+ * Workflow-run dispatcher for `--group <name>` invocations.
+ *
+ * Bypasses per-codebase isolation: instead of validateAndResolveIsolation, we
+ * call setUpGroupRun() to materialize the group worktree (one git worktree per
+ * member, plus a copy of the parent's non-git files), then executeWorkflow
+ * with cwd = group dir. Workflow-event SSE flows through the platform adapter
+ * the same way as a single-codebase run.
+ *
+ * On failure: surfaces a friendly error message via the adapter and re-throws
+ * for upstream logging. The group worktree is intentionally left on disk for
+ * inspection (matches the CLI's failure model).
+ */
+async function handleGroupWorkflowRunCommand(
+  platform: IPlatformAdapter,
+  conversationId: string,
+  conversation: Conversation,
+  workflow: WorkflowDefinition,
+  userMessage: string,
+  groupName: string
+): Promise<void> {
+  let setup: Awaited<ReturnType<typeof setUpGroupRun>>;
+  try {
+    setup = await setUpGroupRun({
+      groupName,
+      workflowName: workflow.name,
+      workflow,
+    });
+  } catch (err) {
+    const e = err as Error;
+    getLog().error(
+      { err: e, groupName, workflowName: workflow.name, conversationId },
+      'group_run.setup_failed'
+    );
+    await platform.sendMessage(
+      conversationId,
+      `Failed to set up group run for "${groupName}": ${e.message}`
+    );
+    return;
+  }
+
+  await platform.sendMessage(
+    conversationId,
+    `Group worktree created at \`${setup.worktree.groupDir}\` on branch \`${setup.branch}\`.\nMembers: ${setup.members.map(m => m.relativePath).join(', ')}.`
+  );
+
+  try {
+    await executeWorkflow(
+      createWorkflowDeps(),
+      platform,
+      conversationId,
+      setup.worktree.groupDir,
+      setup.resolvedWorkflow,
+      userMessage,
+      conversation.id
+      // No codebaseId for group runs — per-codebase env vars and isolation env
+      // tracking don't apply at group scope.
+    );
+  } catch (err) {
+    const e = err as Error;
+    getLog().error(
+      { err: e, groupName, workflowName: workflow.name, conversationId },
+      'group_run.execute_failed'
+    );
+    await platform.sendMessage(
+      conversationId,
+      `Group workflow run failed: ${e.message}\nWorktree left at \`${setup.worktree.groupDir}\` for inspection.`
+    );
+  }
 }

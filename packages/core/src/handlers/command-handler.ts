@@ -785,13 +785,34 @@ async function handleWorkflowCommand(
     case 'run': {
       // Directly invoke a workflow by name (bypasses AI router)
       const workflowName = args[1];
-      const workflowArgs = args.slice(2).join(' ');
+      // Parse --group <name> out of the args before joining the rest as the user message.
+      // Mirrors the CLI: --group runs the workflow against a registered workspace group.
+      const rawArgs = args.slice(2);
+      let groupName: string | undefined;
+      const filteredArgs: string[] = [];
+      for (let i = 0; i < rawArgs.length; i++) {
+        const token = rawArgs[i];
+        if (token === '--group') {
+          const next = rawArgs[i + 1];
+          if (!next) {
+            return {
+              success: false,
+              message: 'Usage: /workflow run <name> --group <group-name> [task]',
+            };
+          }
+          groupName = next;
+          i++; // skip the value token
+          continue;
+        }
+        filteredArgs.push(token);
+      }
+      const workflowArgs = filteredArgs.join(' ');
 
       if (!workflowName) {
         return {
           success: false,
           message:
-            'Usage: /workflow run <name> [args]\n\nUse /workflow list to see available workflows.',
+            'Usage: /workflow run <name> [--group <group-name>] [args]\n\nUse /workflow list to see available workflows.',
         };
       }
 
@@ -870,10 +891,13 @@ async function handleWorkflowCommand(
       // Return special result that triggers workflow execution in orchestrator
       return {
         success: true,
-        message: `Starting workflow: \`${workflow.name}\``,
+        message: groupName
+          ? `Starting workflow \`${workflow.name}\` against workspace group \`${groupName}\``
+          : `Starting workflow: \`${workflow.name}\``,
         workflow: {
           definition: workflow,
           args: workflowArgs,
+          group: groupName,
         },
       };
     }

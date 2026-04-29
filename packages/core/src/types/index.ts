@@ -115,6 +115,12 @@ export interface CommandResult {
     // If set, orchestrator should execute this workflow
     definition: WorkflowDefinition;
     args: string;
+    /**
+     * If set, run the workflow against this registered workspace group instead
+     * of the conversation's codebase. The orchestrator skips the per-codebase
+     * isolation flow and uses setUpGroupRun() to materialize the group worktree.
+     */
+    group?: string;
   };
 }
 
