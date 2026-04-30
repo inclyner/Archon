@@ -22,7 +22,9 @@ export default tseslint.config(
       '**/*.js',
       '*.mjs',
       '**/*.test.ts',
+      '**/*.test.tsx',
       '**/src/test/**', // Test helper files (mock factories, fixtures)
+      'packages/*/test/**', // Per-package test setup (e.g. happy-dom preload)
       '*.d.ts', // Root-level declaration files (not in tsconfig project scope)
       '**/*.generated.d.ts', // Auto-generated declaration files (e.g. openapi-typescript output)
       'packages/web/vite.config.ts', // Vite config doesn't need type-checked linting

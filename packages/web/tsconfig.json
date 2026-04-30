@@ -15,6 +15,6 @@
       "@archon/workflows/*": ["../workflows/src/*"]
     }
   },
-  "include": ["src/**/*", "../workflows/src/defaults/text-imports.d.ts"],
+  "include": ["src/**/*", "test/**/*", "../workflows/src/defaults/text-imports.d.ts"],
   "exclude": ["node_modules", "dist"]
 }
