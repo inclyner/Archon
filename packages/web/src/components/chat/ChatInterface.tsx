@@ -15,6 +15,7 @@ import {
   sendMessage as apiSendMessage,
   listConversations,
   listCodebases,
+  listWorkspaceGroups,
   getMessages,
   createConversation,
   getWorkflowRunByWorker,
@@ -269,15 +270,28 @@ export function ChatInterface({ conversationId }: ChatInterfaceProps): React.Rea
     queryKey: ['codebases'],
     queryFn: listCodebases,
   });
+  const { data: groups } = useQuery({
+    queryKey: ['workspace-groups'],
+    queryFn: listWorkspaceGroups,
+    staleTime: 30_000,
+  });
   const currentConv = conversations?.find(c => c.platform_conversation_id === conversationId);
   const currentCodebase = codebases?.find(cb => cb.id === currentConv?.codebase_id);
+  const currentGroup = groups?.find(g => g.id === currentConv?.workspace_group_id);
   // Fall back to selectedProjectId codebase for header before conversation exists in DB
   const contextCodebase =
     !currentCodebase && selectedProjectId
       ? codebases?.find(cb => cb.id === selectedProjectId)
       : undefined;
   const headerTitle = currentConv?.title ?? 'Chat';
-  const headerSubtitle = currentConv?.cwd ?? undefined;
+  // Show the workspace group OR codebase as the subtitle so users always see
+  // which scope a chat belongs to. Falls back to cwd for orchestrator-unscoped
+  // conversations (rare; mostly historical).
+  const headerSubtitle = currentGroup
+    ? `Group · ${currentGroup.name}`
+    : currentCodebase
+      ? `Project · ${currentCodebase.name}`
+      : (currentConv?.cwd ?? undefined);
 
   const nextId = (): string => {
     messageIdCounter.current += 1;

@@ -26,6 +26,7 @@ export interface ConversationResponse {
   platform_type: string;
   platform_conversation_id: string;
   codebase_id: string | null;
+  workspace_group_id: string | null;
   cwd: string | null;
   ai_assistant_type: string;
   title: string | null;

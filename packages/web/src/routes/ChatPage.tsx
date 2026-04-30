@@ -13,6 +13,8 @@ import {
   addCodebase,
   getCodebaseInput,
   getConversation,
+  listWorkspaceGroups,
+  createConversation,
 } from '@/lib/api';
 import { DevServersPanel } from '@/components/workspace-groups/DevServersPanel';
 import type { CodebaseResponse } from '@/lib/api';
@@ -38,7 +40,20 @@ export function ChatPage(): React.ReactElement {
 
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { selectedProjectId, setSelectedProjectId, codebases, isLoadingCodebases } = useProject();
+  const {
+    selectedProjectId,
+    setSelectedProjectId,
+    selectedGroupId,
+    setSelectedGroupId,
+    codebases,
+    isLoadingCodebases,
+  } = useProject();
+
+  const { data: groups } = useQuery({
+    queryKey: ['workspace-groups'],
+    queryFn: listWorkspaceGroups,
+    staleTime: 30_000,
+  });
 
   const [searchQuery, setSearchQuery] = useState('');
   const [width, setWidth] = useState(getInitialWidth);
@@ -95,8 +110,11 @@ export function ChatPage(): React.ReactElement {
   );
 
   const { data: conversations } = useQuery({
-    queryKey: ['conversations', selectedProjectId],
-    queryFn: () => listConversations(selectedProjectId ?? undefined),
+    // The two filters are mutually exclusive at the data layer (a conversation
+    // has either a codebase_id or a workspace_group_id, never both), so we
+    // pass whichever is set. ProjectContext setters keep this invariant.
+    queryKey: ['conversations', { selectedProjectId, selectedGroupId }],
+    queryFn: () => listConversations(selectedProjectId ?? undefined, selectedGroupId ?? undefined),
     refetchInterval: 10_000,
   });
 
@@ -143,8 +161,18 @@ export function ChatPage(): React.ReactElement {
   );
 
   const handleNewChat = useCallback((): void => {
+    // Group-scoped: create the conversation up front (so it lands tagged
+    // with workspace_group_id) and navigate into it. Without this, hitting
+    // "+ New Chat" with a group selected just lands you in /chat which has
+    // no group context — the next message would be orchestrator-unscoped.
+    if (selectedGroupId) {
+      void createConversation(undefined, undefined, selectedGroupId).then(created => {
+        navigate(`/chat/${encodeURIComponent(created.conversationId)}`);
+      });
+      return;
+    }
     navigate('/chat');
-  }, [navigate]);
+  }, [navigate, selectedGroupId]);
 
   const handleAddSubmit = useCallback((): void => {
     const trimmed = addValue.trim();
@@ -251,19 +279,53 @@ export function ChatPage(): React.ReactElement {
               <span className="text-xs text-text-tertiary">Loading...</span>
             </div>
           ) : (
+            // Unified dropdown: codebases AND workspace groups in one selector.
+            // Encoding: option values are prefixed `cb:<id>` for codebases or
+            // `grp:<id>` for groups so the onChange can route to the right
+            // setter (which clears the other scope thanks to ProjectContext's
+            // mutual-exclusion logic). The empty string ("") clears both.
             <select
-              value={selectedProjectId ?? ''}
+              value={
+                selectedGroupId
+                  ? `grp:${selectedGroupId}`
+                  : selectedProjectId
+                    ? `cb:${selectedProjectId}`
+                    : ''
+              }
               onChange={(e): void => {
-                setSelectedProjectId(e.target.value || null);
+                const v = e.target.value;
+                if (!v) {
+                  setSelectedProjectId(null);
+                  setSelectedGroupId(null);
+                  return;
+                }
+                if (v.startsWith('grp:')) {
+                  setSelectedGroupId(v.slice(4));
+                } else if (v.startsWith('cb:')) {
+                  setSelectedProjectId(v.slice(3));
+                }
               }}
               className="w-full rounded-md border border-border bg-surface-elevated px-2 py-1.5 text-xs text-text-primary focus:border-primary focus:outline-none"
             >
               <option value="">All Projects</option>
-              {codebases?.map(cb => (
-                <option key={cb.id} value={cb.id}>
-                  {cb.name}
-                </option>
-              ))}
+              {groups && groups.length > 0 && (
+                <optgroup label="Workspace Groups (cross-repo)">
+                  {groups.map(g => (
+                    <option key={g.id} value={`grp:${g.id}`}>
+                      {g.name}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+              {codebases && codebases.length > 0 && (
+                <optgroup label="Codebases">
+                  {codebases.map(cb => (
+                    <option key={cb.id} value={`cb:${cb.id}`}>
+                      {cb.name}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
             </select>
           )}
         </div>
