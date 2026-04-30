@@ -39,6 +39,7 @@ import type {
 } from '@archon/workflows/schemas/workflow';
 import { createWorkflowDeps } from '../workflows/store-adapter';
 import { runGroupWorkflow } from '../workflows/group-run';
+import { ensureGroupConversationWorktree } from './group-chat';
 import { loadConfig } from '../config/config-loader';
 import type { MergedConfig } from '../config/config-types';
 import { generateAndSetTitle } from '../services/title-generator';
@@ -830,7 +831,37 @@ export async function handleMessage(
       attachedFiles,
       workflowContext
     );
-    const cwd = getArchonWorkspacesPath();
+    // For group-scoped conversations: resolve (or create on first message)
+    // the per-conversation folder-level worktree, and use its outer dir as
+    // cwd so the AI session sees all member repos as siblings under one
+    // root. For all other conversations: keep the existing convention of
+    // running orchestrator-unscoped work out of the archon workspaces root.
+    let cwd = getArchonWorkspacesPath();
+    if (conversation.workspace_group_id) {
+      try {
+        const groupCtx = await ensureGroupConversationWorktree(conversation);
+        cwd = groupCtx.groupDir;
+        getLog().info(
+          {
+            conversationId: conversation.id,
+            groupName: groupCtx.group.name,
+            branch: groupCtx.branch,
+            groupDir: groupCtx.groupDir,
+          },
+          'orchestrator.group_chat_worktree_resolved'
+        );
+      } catch (err) {
+        getLog().error(
+          { err, conversationId: conversation.id, groupId: conversation.workspace_group_id },
+          'orchestrator.group_chat_worktree_failed'
+        );
+        await platform.sendMessage(
+          conversationId,
+          `Could not set up the group worktree: ${(err as Error).message}`
+        );
+        return;
+      }
+    }
 
     // 4. Update activity and get/create session
     await db.touchConversation(conversation.id);

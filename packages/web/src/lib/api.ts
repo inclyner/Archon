@@ -121,10 +121,12 @@ export async function listConversations(codebaseId?: string): Promise<Conversati
 
 export async function createConversation(
   codebaseId?: string,
-  message?: string
+  message?: string,
+  workspaceGroupId?: string
 ): Promise<{ conversationId: string; id: string; dispatched?: boolean }> {
   const body: Record<string, string> = {};
   if (codebaseId) body.codebaseId = codebaseId;
+  if (workspaceGroupId) body.workspaceGroupId = workspaceGroupId;
   if (message) body.message = message;
 
   return fetchJSON('/api/conversations', {

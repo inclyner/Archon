@@ -12,6 +12,7 @@
  * symlinked) so AI edits don't touch the user's source parent dir.
  */
 import { existsSync } from 'fs';
+import type { Dirent } from 'fs';
 import { mkdir, readdir, copyFile, lstat, rm } from 'fs/promises';
 import { join, dirname } from 'path';
 import { execFileAsync } from '@archon/git';
@@ -112,6 +113,61 @@ async function copyDirectoryShallow(
 }
 
 /**
+ * Phase B: copy gitignored env / config files from a source repo into a
+ * fresh worktree dir so per-conversation dev servers can actually start.
+ *
+ * Patterns are matched against the source repo's TOP LEVEL only (no
+ * recursion). That's intentional — most env files live at repo root, and
+ * descending into subdirs would risk re-copying things `git worktree add`
+ * already populated from tracked files. If a user's .env lives deeper, they
+ * can copy it manually for now (low frequency, high risk if we widen the
+ * net).
+ *
+ * Patterns observed across the Rimon repos:
+ *   .env, .env.local, .env.development, .env.production, .env.staging,
+ *   .env.test, .env.local-prod, .env.local-test  (Node/dotenv style)
+ *   appsettings.Local.json, appsettings.Development.json   (.NET style)
+ *
+ * Skipped: anything ending in -template, -sample, -example, .example,
+ * .template (those are committed examples, not the user's real config).
+ */
+async function mirrorEnvFiles(sourceRepo: string, memberDir: string): Promise<void> {
+  const TEMPLATE_SUFFIXES = ['-template', '-sample', '-example', '.example', '.template'];
+  const isTemplate = (name: string): boolean =>
+    TEMPLATE_SUFFIXES.some(suffix => name.toLowerCase().endsWith(suffix));
+
+  const matches = (name: string): boolean => {
+    if (isTemplate(name)) return false;
+    if (name === '.env' || name.startsWith('.env.') || name.startsWith('.env-')) return true;
+    // appsettings.Local.json, appsettings.Development.json — but NOT
+    // appsettings.json itself (that one is tracked + committed in the
+    // Rimon repos, so `git worktree add` already produced it).
+    if (/^appsettings\..+\.json$/i.test(name)) return true;
+    return false;
+  };
+
+  let entries: Dirent[];
+  try {
+    entries = await readdir(sourceRepo, { withFileTypes: true });
+  } catch {
+    return; // unreadable source repo dir — caller already validated worktree-add succeeded
+  }
+
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    if (!matches(entry.name)) continue;
+    const src = join(sourceRepo, entry.name);
+    const dst = join(memberDir, entry.name);
+    if (existsSync(dst)) continue; // tracked file with same name already in worktree → don't overwrite
+    try {
+      await copyFile(src, dst);
+    } catch (e) {
+      getLog().warn({ err: e as Error, src, dst }, 'workspace_group.env_mirror_file_failed');
+    }
+  }
+}
+
+/**
  * `git worktree remove` for one path. Best-effort; never throws.
  *
  * `force` controls whether `--force` is passed to git. With force=false (the
@@ -173,7 +229,7 @@ export async function createGroupWorktree(req: GroupWorktreeRequest): Promise<Gr
     await mkdir(groupDir, { recursive: true });
     createdGroupDir = true;
 
-    // Step 2: per-member `git worktree add`.
+    // Step 2: per-member `git worktree add` + env-file mirroring.
     for (const member of req.members) {
       const memberDir = join(groupDir, member.relativePath);
       await mkdir(dirname(memberDir), { recursive: true });
@@ -186,6 +242,20 @@ export async function createGroupWorktree(req: GroupWorktreeRequest): Promise<Gr
         sourceRepoPath: member.sourceRepoPath,
         worktreePath: memberDir,
       });
+      // Phase B: copy env / config files that are gitignored but needed for
+      // local dev (so per-conversation dev servers in Phase C can actually
+      // start). We snapshot rather than symlink — the user wanted env state
+      // frozen at conversation-creation time, not propagated mid-session.
+      // Failures here are warnings, not fatals: the worktree itself is fine,
+      // dev servers just won't auto-start until the user copies the files.
+      try {
+        await mirrorEnvFiles(member.sourceRepoPath, memberDir);
+      } catch (envErr) {
+        getLog().warn(
+          { err: envErr as Error, sourceRepo: member.sourceRepoPath, memberDir },
+          'workspace_group.env_mirror_failed'
+        );
+      }
     }
 
     // Step 3: copy parent's non-git files. Skip member subdirs, `.git`, and

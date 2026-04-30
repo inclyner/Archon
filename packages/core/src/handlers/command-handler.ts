@@ -26,6 +26,7 @@ import type {
   WorkflowDefinition,
 } from '@archon/workflows/schemas/workflow';
 import * as workflowDb from '../db/workflows';
+import * as workspaceGroupDb from '../db/workspace-groups';
 import {
   approveWorkflow,
   rejectWorkflow,
@@ -805,6 +806,28 @@ async function handleWorkflowCommand(
           continue;
         }
         filteredArgs.push(token);
+      }
+      // Default the group from the conversation's scope when --group wasn't
+      // explicit. This is what makes group-scoped chat ergonomic — the user
+      // types `/workflow run X "task"` and it just runs against their group.
+      // Explicit --group still wins (e.g. cross-group experimentation).
+      if (!groupName && conversation.workspace_group_id) {
+        try {
+          const group = await workspaceGroupDb.getGroupById(conversation.workspace_group_id);
+          if (group) {
+            groupName = group.name;
+            getLog().debug(
+              { conversationId: conversation.id, groupName },
+              'cmd.workflow_run_group_default_applied'
+            );
+          }
+        } catch (err) {
+          // Lookup failure is non-fatal — fall back to no-group behaviour.
+          getLog().warn(
+            { err: err as Error, conversationId: conversation.id },
+            'cmd.workflow_run_group_lookup_failed'
+          );
+        }
       }
       const workflowArgs = filteredArgs.join(' ');
 

@@ -8,7 +8,7 @@ import {
   FolderTree,
   MessageSquarePlus,
 } from 'lucide-react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQueryClient, useQuery } from '@tanstack/react-query';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '@/components/ui/collapsible';
@@ -18,7 +18,13 @@ import { ProjectDetail } from '@/components/sidebar/ProjectDetail';
 import { AllConversationsView } from '@/components/sidebar/AllConversationsView';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import { useProject } from '@/contexts/ProjectContext';
-import { addCodebase, getCodebaseInput } from '@/lib/api';
+import {
+  addCodebase,
+  getCodebaseInput,
+  listWorkspaceGroups,
+  createConversation,
+  type WorkspaceGroupResponse,
+} from '@/lib/api';
 
 const SIDEBAR_MIN = 240;
 const SIDEBAR_MAX = 400;
@@ -210,14 +216,11 @@ export function Sidebar(): React.ReactElement {
           <MessageSquarePlus className="h-4 w-4 shrink-0" />
           New Chat
         </button>
-        <Link
-          to="/groups"
-          className="mt-1 flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium text-text-secondary hover:bg-surface-elevated hover:text-text-primary transition-colors"
-        >
-          <FolderTree className="h-4 w-4 shrink-0" />
-          Workspace Groups
-        </Link>
       </div>
+
+      <Separator className="bg-border" />
+
+      <WorkspaceGroupsSection />
 
       <Separator className="bg-border" />
 
@@ -333,5 +336,89 @@ export function Sidebar(): React.ReactElement {
         className="absolute right-0 top-0 bottom-0 w-1.5 cursor-col-resize bg-border/50 hover:bg-primary/40 transition-colors"
       />
     </aside>
+  );
+}
+
+/**
+ * Lists registered workspace groups in the sidebar. Click → spawns a fresh
+ * conversation tagged with that group's id, then navigates to the chat. The
+ * orchestrator + group-chat helper materializes the per-conversation
+ * worktree lazily on the first message.
+ *
+ * Standalone component (not inlined into Sidebar) so the useQuery + useMutation
+ * hooks live alongside the JSX they drive.
+ */
+function WorkspaceGroupsSection(): React.ReactElement {
+  const navigate = useNavigate();
+  const { data: groups, isLoading } = useQuery({
+    queryKey: ['workspace-groups'],
+    queryFn: listWorkspaceGroups,
+    staleTime: 30_000,
+  });
+  const [busyGroupId, setBusyGroupId] = useState<string | null>(null);
+
+  async function startGroupChat(group: WorkspaceGroupResponse): Promise<void> {
+    if (busyGroupId) return;
+    setBusyGroupId(group.id);
+    try {
+      const created = await createConversation(undefined, undefined, group.id);
+      navigate(`/chat/${encodeURIComponent(created.conversationId)}`);
+    } catch (e) {
+      // Surface to console; toast plumbing for the sidebar is a follow-up.
+      // The Groups page has full error UI, so this is a nudge to head there.
+
+      console.error('Failed to start group chat', e);
+    } finally {
+      setBusyGroupId(null);
+    }
+  }
+
+  return (
+    <div className="px-2 py-2">
+      <div className="flex items-center justify-between px-1">
+        <span className="text-[11px] font-semibold uppercase tracking-wider text-text-tertiary">
+          Workspace Groups
+        </span>
+        <Link
+          to="/groups"
+          className="p-1 rounded hover:bg-surface-elevated transition-colors text-text-tertiary hover:text-primary"
+          title="Manage groups"
+        >
+          <FolderTree className="h-3.5 w-3.5" />
+        </Link>
+      </div>
+      {isLoading && (
+        <div className="mt-1 flex items-center gap-2 px-3 py-1.5 text-xs text-text-tertiary">
+          <Loader2 className="h-3 w-3 animate-spin" /> Loading groups...
+        </div>
+      )}
+      {!isLoading && groups?.length === 0 && (
+        <Link
+          to="/groups"
+          className="mt-1 block px-3 py-1.5 text-[11px] text-text-tertiary hover:text-primary"
+        >
+          No groups yet — register one →
+        </Link>
+      )}
+      {groups?.map(group => (
+        <button
+          key={group.id}
+          onClick={(): void => {
+            void startGroupChat(group);
+          }}
+          disabled={busyGroupId !== null}
+          className="mt-1 flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm text-text-secondary hover:bg-surface-elevated hover:text-text-primary transition-colors disabled:opacity-50"
+          title={`New chat across all members of ${group.name}`}
+        >
+          {busyGroupId === group.id ? (
+            <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />
+          ) : (
+            <FolderTree className="h-3.5 w-3.5 shrink-0 text-primary" />
+          )}
+          <span className="truncate flex-1">{group.name}</span>
+          <MessageSquarePlus className="h-3 w-3 shrink-0 text-text-tertiary" />
+        </button>
+      ))}
+    </div>
   );
 }
