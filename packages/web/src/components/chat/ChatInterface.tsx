@@ -104,7 +104,7 @@ interface ChatInterfaceProps {
 export function ChatInterface({ conversationId }: ChatInterfaceProps): React.ReactElement {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { selectedProjectId } = useProject();
+  const { selectedProjectId, selectedGroupId } = useProject();
   const hasTriggeredTitleRefresh = useRef(false);
   const isNewChat = conversationId === 'new';
   const [messages, setMessages] = useState<ChatMessage[]>(() =>
@@ -278,20 +278,33 @@ export function ChatInterface({ conversationId }: ChatInterfaceProps): React.Rea
   const currentConv = conversations?.find(c => c.platform_conversation_id === conversationId);
   const currentCodebase = codebases?.find(cb => cb.id === currentConv?.codebase_id);
   const currentGroup = groups?.find(g => g.id === currentConv?.workspace_group_id);
-  // Fall back to selectedProjectId codebase for header before conversation exists in DB
+  // Fall back to the sidebar's selection for the chat header BEFORE the
+  // conversation exists in the DB (e.g. on /chat with a scope selected,
+  // moments before the first message is sent). Mutually exclusive with
+  // contextCodebase by construction (ProjectContext setters enforce it).
   const contextCodebase =
-    !currentCodebase && selectedProjectId
+    !currentCodebase && !currentGroup && selectedProjectId
       ? codebases?.find(cb => cb.id === selectedProjectId)
       : undefined;
+  const contextGroup =
+    !currentGroup && !currentCodebase && selectedGroupId
+      ? groups?.find(g => g.id === selectedGroupId)
+      : undefined;
   const headerTitle = currentConv?.title ?? 'Chat';
-  // Show the workspace group OR codebase as the subtitle so users always see
-  // which scope a chat belongs to. Falls back to cwd for orchestrator-unscoped
-  // conversations (rare; mostly historical).
-  const headerSubtitle = currentGroup
-    ? `Group · ${currentGroup.name}`
-    : currentCodebase
-      ? `Project · ${currentCodebase.name}`
-      : (currentConv?.cwd ?? undefined);
+  // The Header takes two slots:
+  //   - subtitle = cwd path (renders as a copy-button + "Open in IDE")
+  //   - projectName = label (renders as plain text below the title)
+  // Group-scoped conversations don't have a single cwd at this layer
+  // (they have N member worktrees), so we leave subtitle empty for them
+  // and use the projectName slot for the "Group · Rimon" label.
+  const headerSubtitle = currentConv?.cwd ?? undefined;
+  const scopeLabel = ((): string | undefined => {
+    const group = currentGroup ?? contextGroup;
+    if (group) return `Group · ${group.name}`;
+    const cb = currentCodebase ?? contextCodebase;
+    if (cb) return cb.name;
+    return undefined;
+  })();
 
   const nextId = (): string => {
     messageIdCounter.current += 1;
@@ -706,7 +719,7 @@ export function ChatInterface({ conversationId }: ChatInterfaceProps): React.Rea
       <Header
         title={isNewChat ? 'New Chat' : headerTitle}
         subtitle={headerSubtitle}
-        projectName={currentCodebase?.name ?? contextCodebase?.name}
+        projectName={scopeLabel}
         connected={isNewChat ? undefined : connected}
         isDocker={isDocker}
       />
@@ -722,7 +735,7 @@ export function ChatInterface({ conversationId }: ChatInterfaceProps): React.Rea
         messages={messages}
         isStreaming={isStreaming}
         isNewChat={isNewChat}
-        projectName={currentCodebase?.name ?? contextCodebase?.name}
+        projectName={scopeLabel}
         onQuickAction={(action): void => {
           if (action === 'focus') {
             inputRef.current?.focus();
