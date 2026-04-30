@@ -14,6 +14,7 @@ import { SettingsPage } from '@/routes/SettingsPage';
 import { GroupsPage } from '@/routes/GroupsPage';
 import { GroupDetailPage } from '@/routes/GroupDetailPage';
 import { SlackPage } from '@/routes/SlackPage';
+import { JiraPage } from '@/routes/JiraPage';
 
 interface ErrorBoundaryState {
   hasError: boolean;
@@ -83,6 +84,7 @@ export function App(): React.ReactElement {
                 <Route path="/groups" element={<GroupsPage />} />
                 <Route path="/groups/:name" element={<GroupDetailPage />} />
                 <Route path="/slack" element={<SlackPage />} />
+                <Route path="/jira" element={<JiraPage />} />
               </Route>
             </Routes>
           </BrowserRouter>

@@ -7,6 +7,7 @@ import {
   Settings,
   FolderTree,
   Inbox,
+  Ticket,
 } from 'lucide-react';
 import { listDashboardRuns, getUpdateCheck } from '@/lib/api';
 import { cn } from '@/lib/utils';
@@ -16,6 +17,7 @@ const tabs = [
   { to: '/dashboard', end: true, icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/workflows', end: false, icon: Workflow, label: 'Workflows' },
   { to: '/groups', end: false, icon: FolderTree, label: 'Groups' },
+  { to: '/jira', end: false, icon: Ticket, label: 'Jira' },
   { to: '/slack', end: false, icon: Inbox, label: 'Slack' },
   { to: '/settings', end: false, icon: Settings, label: 'Settings' },
 ] as const;
