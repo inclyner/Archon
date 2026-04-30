@@ -1,6 +1,13 @@
 import { NavLink, Link } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
-import { LayoutDashboard, MessageSquare, Workflow, Settings, FolderTree } from 'lucide-react';
+import {
+  LayoutDashboard,
+  MessageSquare,
+  Workflow,
+  Settings,
+  FolderTree,
+  Inbox,
+} from 'lucide-react';
 import { listDashboardRuns, getUpdateCheck } from '@/lib/api';
 import { cn } from '@/lib/utils';
 
@@ -9,6 +16,7 @@ const tabs = [
   { to: '/dashboard', end: true, icon: LayoutDashboard, label: 'Dashboard' },
   { to: '/workflows', end: false, icon: Workflow, label: 'Workflows' },
   { to: '/groups', end: false, icon: FolderTree, label: 'Groups' },
+  { to: '/slack', end: false, icon: Inbox, label: 'Slack' },
   { to: '/settings', end: false, icon: Settings, label: 'Settings' },
 ] as const;
 

@@ -339,6 +339,91 @@ export async function getConversation(platformId: string): Promise<ConversationD
   return fetchJSON<ConversationDetail>(`/api/conversations/${encodeURIComponent(platformId)}`);
 }
 
+// ─── Slack inbox + Jira issue creation ──────────────────────────────────────
+
+export interface SlackConfigStatus {
+  configured: boolean;
+  hasToken: boolean;
+  tokenSource: 'db' | 'env' | 'none';
+  channelIds: string[];
+  pollIntervalSeconds: number;
+  defaultJiraProjectKey: string | null;
+}
+
+export interface SlackMessage {
+  id: string;
+  channelId: string;
+  channelName: string;
+  ts: string;
+  timestamp: string;
+  userId: string | null;
+  userDisplay: string;
+  text: string;
+  permalink: string;
+}
+
+export async function getSlackConfig(): Promise<SlackConfigStatus> {
+  return fetchJSON<SlackConfigStatus>('/api/settings/slack');
+}
+
+export async function saveSlackConfig(input: {
+  token?: string;
+  channelIds?: string[];
+  pollIntervalSeconds?: number;
+  defaultJiraProjectKey?: string;
+}): Promise<SlackConfigStatus> {
+  return fetchJSON<SlackConfigStatus>('/api/settings/slack', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+}
+
+export async function clearSlackConfig(): Promise<{ success: boolean }> {
+  return fetchJSON<{ success: boolean }>('/api/settings/slack', { method: 'DELETE' });
+}
+
+export async function testSlackConnection(): Promise<{
+  ok: boolean;
+  teamName?: string;
+  botName?: string;
+  error?: string;
+}> {
+  return fetchJSON('/api/slack/test', { method: 'POST' });
+}
+
+export async function listSlackMessages(): Promise<{ messages: SlackMessage[] }> {
+  return fetchJSON<{ messages: SlackMessage[] }>('/api/slack/messages');
+}
+
+export interface JiraProjectSummary {
+  id: string;
+  key: string;
+  name: string;
+}
+
+export async function listJiraProjects(): Promise<{ projects: JiraProjectSummary[] }> {
+  return fetchJSON<{ projects: JiraProjectSummary[] }>('/api/jira/projects');
+}
+
+export interface JiraCreatedIssue {
+  id: string;
+  key: string;
+  url: string;
+}
+
+export async function createJiraIssue(input: {
+  summary: string;
+  description: string;
+  projectKey?: string;
+}): Promise<JiraCreatedIssue> {
+  return fetchJSON<JiraCreatedIssue>('/api/jira/issues', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+}
+
 // ─── Jira (Phase D) ──────────────────────────────────────────────────────────
 
 export interface JiraConfigStatus {

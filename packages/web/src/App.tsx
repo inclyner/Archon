@@ -13,6 +13,7 @@ import { WorkflowBuilderPage } from '@/routes/WorkflowBuilderPage';
 import { SettingsPage } from '@/routes/SettingsPage';
 import { GroupsPage } from '@/routes/GroupsPage';
 import { GroupDetailPage } from '@/routes/GroupDetailPage';
+import { SlackPage } from '@/routes/SlackPage';
 
 interface ErrorBoundaryState {
   hasError: boolean;
@@ -81,6 +82,7 @@ export function App(): React.ReactElement {
                 <Route path="/settings" element={<SettingsPage />} />
                 <Route path="/groups" element={<GroupsPage />} />
                 <Route path="/groups/:name" element={<GroupDetailPage />} />
+                <Route path="/slack" element={<SlackPage />} />
               </Route>
             </Routes>
           </BrowserRouter>

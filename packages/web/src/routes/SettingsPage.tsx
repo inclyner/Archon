@@ -21,6 +21,11 @@ import {
   saveJiraConfig,
   clearJiraConfig,
   testJiraConnection,
+  getSlackConfig,
+  saveSlackConfig,
+  clearSlackConfig,
+  testSlackConnection,
+  listJiraProjects,
 } from '@/lib/api';
 import type {
   SafeConfigResponse,
@@ -730,9 +735,248 @@ export function SettingsPage(): React.ReactElement {
           <ProjectsSection />
 
           <JiraSection />
+
+          <SlackSection />
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * Slack inbox configuration. Reuses the bot's existing token (from
+ * SLACK_BOT_TOKEN env var) by default; lets the user paste a custom token
+ * to override. Channel IDs persist as a JSON array. The default Jira
+ * project picker is populated by hitting /api/jira/projects (only works
+ * once Jira creds are saved above).
+ */
+function SlackSection(): React.ReactElement {
+  const queryClient = useQueryClient();
+  const { data: status, isLoading } = useQuery({
+    queryKey: ['slack-config'],
+    queryFn: getSlackConfig,
+  });
+
+  const { data: jiraProjects } = useQuery({
+    queryKey: ['jira-projects'],
+    queryFn: listJiraProjects,
+    // Only attempt once Jira's been configured — otherwise we get a 400
+    // and the user has to read the network tab to figure out why the
+    // dropdown is empty.
+    enabled: true,
+    retry: false,
+  });
+
+  const [token, setToken] = useState('');
+  const [channelIdsText, setChannelIdsText] = useState('');
+  const [pollSeconds, setPollSeconds] = useState(30);
+  const [defaultProjectKey, setDefaultProjectKey] = useState('');
+  const [testResult, setTestResult] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!status) return;
+    setChannelIdsText(status.channelIds.join('\n'));
+    setPollSeconds(status.pollIntervalSeconds);
+    setDefaultProjectKey(status.defaultJiraProjectKey ?? '');
+  }, [status]);
+
+  const save = useMutation({
+    mutationFn: () =>
+      saveSlackConfig({
+        // Empty token field = "don't change" (so users can save channels
+        // without retyping a token they're keeping or that came from env).
+        token: token.trim() || undefined,
+        channelIds: channelIdsText
+          .split('\n')
+          .map(s => s.trim())
+          .filter(s => s.length > 0),
+        pollIntervalSeconds: pollSeconds,
+        defaultJiraProjectKey: defaultProjectKey || undefined,
+      }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['slack-config'] });
+      setToken('');
+      setTestResult('Saved.');
+    },
+    onError: (e: Error) => {
+      setTestResult(`Save failed: ${e.message}`);
+    },
+  });
+
+  const clear = useMutation({
+    mutationFn: () => clearSlackConfig(),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['slack-config'] });
+      setToken('');
+      setChannelIdsText('');
+      setDefaultProjectKey('');
+      setTestResult('Cleared.');
+    },
+  });
+
+  const test = useMutation({
+    mutationFn: () => testSlackConnection(),
+    onSuccess: result => {
+      if (result.ok) {
+        setTestResult(
+          `Connected to ${result.teamName ?? 'workspace'} as @${result.botName ?? 'bot'}.`
+        );
+      } else {
+        setTestResult(`Failed: ${result.error ?? 'unknown error'}`);
+      }
+    },
+    onError: (e: Error) => {
+      setTestResult(`Failed: ${e.message}`);
+    },
+  });
+
+  const sourceLabel =
+    status?.tokenSource === 'env'
+      ? 'env (SLACK_BOT_TOKEN)'
+      : status?.tokenSource === 'db'
+        ? 'saved'
+        : 'unset';
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Slack inbox</CardTitle>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <p className="text-sm text-muted-foreground">Loading...</p>
+        ) : (
+          <div className="flex flex-col gap-3">
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-muted-foreground">Token source:</span>
+              <Badge variant={status?.hasToken ? 'default' : 'secondary'}>{sourceLabel}</Badge>
+              {status?.tokenSource === 'env' && (
+                <span className="text-[11px] text-text-tertiary">
+                  Reusing the bot adapter's token. Paste below to override.
+                </span>
+              )}
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-text-secondary">
+                Bot User OAuth Token{' '}
+                <span className="text-text-tertiary">
+                  (xoxb-…; needed scopes: channels:history, groups:history, users:read)
+                </span>
+              </label>
+              <Input
+                type="password"
+                value={token}
+                onChange={(e): void => {
+                  setToken(e.target.value);
+                }}
+                placeholder={status?.hasToken ? '••••••••  (set — paste to replace)' : 'xoxb-...'}
+                disabled={save.isPending}
+              />
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-text-secondary">
+                Channel IDs (one per line)
+              </label>
+              <textarea
+                value={channelIdsText}
+                onChange={(e): void => {
+                  setChannelIdsText(e.target.value);
+                }}
+                rows={4}
+                placeholder={'C0123456789\nC0987654321'}
+                disabled={save.isPending}
+                className="rounded-md border border-input bg-transparent px-3 py-2 text-sm font-mono shadow-xs focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] outline-none"
+              />
+              <p className="text-[11px] text-text-tertiary">
+                Find a channel id by clicking the channel name in Slack → "About" → bottom of the
+                modal. The bot must be a member of each channel (
+                <code>/invite @&lt;your-bot&gt;</code>).
+              </p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-medium text-text-secondary">
+                  Poll interval (seconds)
+                </label>
+                <Input
+                  type="number"
+                  min={10}
+                  value={pollSeconds}
+                  onChange={(e): void => {
+                    setPollSeconds(Math.max(10, Number(e.target.value) || 30));
+                  }}
+                  disabled={save.isPending}
+                />
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-medium text-text-secondary">
+                  Default Jira project (for "Make ticket")
+                </label>
+                <select
+                  value={defaultProjectKey}
+                  onChange={(e): void => {
+                    setDefaultProjectKey(e.target.value);
+                  }}
+                  disabled={save.isPending}
+                  className={selectClass}
+                >
+                  <option value="">—</option>
+                  {jiraProjects?.projects.map(p => (
+                    <option key={p.id} value={p.key}>
+                      {p.key} — {p.name}
+                    </option>
+                  ))}
+                </select>
+                {!jiraProjects && (
+                  <p className="text-[11px] text-text-tertiary">
+                    Configure Jira above to load projects.
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {testResult && (
+              <div className="rounded-md border border-border bg-surface-elevated px-3 py-2 text-xs">
+                {testResult}
+              </div>
+            )}
+
+            <div className="flex gap-2 pt-1">
+              <Button
+                onClick={(): void => {
+                  save.mutate();
+                }}
+                disabled={save.isPending}
+              >
+                Save
+              </Button>
+              <Button
+                variant="outline"
+                onClick={(): void => {
+                  test.mutate();
+                }}
+                disabled={!status?.hasToken || test.isPending}
+              >
+                Test connection
+              </Button>
+              <Button
+                variant="ghost"
+                onClick={(): void => {
+                  clear.mutate();
+                }}
+                disabled={clear.isPending}
+              >
+                Clear
+              </Button>
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
