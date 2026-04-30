@@ -1,0 +1,148 @@
+name: archon-bug-tdd
+description: |
+  Use when: A bug is reported and the user wants the AI to fix it test-first ("RH-1050 has a regression — find it and fix it", "this is broken, write a failing test then fix it").
+  Handles: Bug investigation → failing test → fix → green → regression sweep, with an approval gate before merging.
+  NOT for: Greenfield feature work (use archon-feature-development), or read-only audits (use archon-cross-repo-orient).
+  Capability: Forces TDD discipline. The bash gate after step 2 fails the run if the test passes, so the AI can't fake "the bug is fixed" without first reproducing it.
+  Group-aware: Runs against $GROUP_DIR when invoked with --group. Single-repo runs are fine too — the workflow doesn't reference per-repo vars.
+
+nodes:
+  - id: investigate
+    prompt: |
+      A bug has been reported. Your task in THIS step only is to investigate
+      it deeply enough that you can later write a failing test that reproduces
+      it.
+
+      ## Bug report
+
+      $USER_MESSAGE
+
+      ## What to do
+
+      1. Read the relevant code paths. Understand the expected vs actual
+         behavior.
+      2. Identify the SMALLEST surface area that demonstrates the bug
+         (one function / one HTTP endpoint / one UI interaction).
+      3. State your reproduction theory in 5-10 lines: which file/function
+         is at fault, what input triggers it, what the wrong behavior is.
+
+      Do NOT write any code yet. Do NOT modify files. Investigation only.
+
+  - id: write-failing-test
+    depends_on: [investigate]
+    prompt: |
+      Investigation summary:
+
+      $investigate.output
+
+      Now write a single failing test that reproduces the bug. Constraints:
+
+      - One test, in the most natural test file for the affected code.
+      - It must currently FAIL because of the bug. If it passes, the bug
+        isn't actually reproduced and you need to rethink — the next step
+        will fail loudly and end the run.
+      - Use the existing test framework / runner the repo already uses.
+        Don't introduce new test deps.
+      - Name the test after the bug ("RH-1050: ..." style if a ticket
+        exists, otherwise descriptive).
+      - Output the EXACT command needed to run JUST this test (no whole-suite
+        runs yet) on the LAST line of your response, prefixed with
+        `TEST_CMD: `. Example:
+            TEST_CMD: pnpm test -- --run path/to/file.test.ts -t "RH-1050"
+
+      Output the file path you wrote, the diff, and the TEST_CMD line.
+
+  - id: confirm-test-fails
+    depends_on: [write-failing-test]
+    bash: |
+      set -e
+      # Extract the TEST_CMD line from the previous step.
+      cmd=$(printf '%s\n' "$write-failing-test.output" | grep -E '^TEST_CMD:' | tail -n1 | sed 's/^TEST_CMD: *//')
+      if [ -z "$cmd" ]; then
+        echo "ERROR: previous step did not emit a TEST_CMD line. Refusing to proceed." >&2
+        exit 1
+      fi
+      echo "Running test command (expecting FAILURE): $cmd"
+      # Disable -e for the test run so we can inspect its exit code.
+      set +e
+      eval "$cmd"
+      rc=$?
+      set -e
+      if [ $rc -eq 0 ]; then
+        echo "ERROR: the test passed. The bug isn't actually being reproduced." >&2
+        echo "       Rewrite the test in write-failing-test to actually fail." >&2
+        exit 2
+      fi
+      echo "Test failed as expected (rc=$rc). Reproduction confirmed."
+
+  - id: fix
+    depends_on: [confirm-test-fails]
+    prompt: |
+      The failing test is in place and reproduces the bug. Investigation
+      summary:
+
+      $investigate.output
+
+      Now fix the bug so the failing test passes. Constraints:
+
+      - Smallest possible change that makes the test pass.
+      - Don't refactor adjacent code unless absolutely necessary.
+      - Don't modify the test you just wrote (unless you discover the
+        repro itself was wrong, in which case explain).
+      - On the LAST line emit `TEST_CMD: <same command>` so the next step
+        can re-run it.
+
+  - id: confirm-test-passes
+    depends_on: [fix]
+    bash: |
+      set -e
+      cmd=$(printf '%s\n' "$fix.output" | grep -E '^TEST_CMD:' | tail -n1 | sed 's/^TEST_CMD: *//')
+      if [ -z "$cmd" ]; then
+        echo "ERROR: fix step did not emit a TEST_CMD line." >&2
+        exit 1
+      fi
+      echo "Running test command (expecting SUCCESS): $cmd"
+      eval "$cmd"
+      echo "Test passes."
+
+  - id: regression-sweep
+    depends_on: [confirm-test-passes]
+    prompt: |
+      The bug is fixed and the new test passes. Now scan for regressions:
+
+      1. Identify the broader test suite(s) you should run for the affected
+         repo(s). For each, output the command on its own line as
+         `SUITE_CMD: <command>`.
+      2. List one or two NEARBY tests / scenarios that this fix could
+         plausibly have broken — give file:line references.
+
+      Don't run anything yourself in this step — the next step's bash will
+      run the SUITE_CMD lines.
+
+  - id: run-regression-sweep
+    depends_on: [regression-sweep]
+    bash: |
+      set -e
+      cmds=$(printf '%s\n' "$regression-sweep.output" | grep -E '^SUITE_CMD:' | sed 's/^SUITE_CMD: *//')
+      if [ -z "$cmds" ]; then
+        echo "WARNING: no SUITE_CMD lines emitted; skipping regression sweep." >&2
+        exit 0
+      fi
+      printf '%s\n' "$cmds" | while IFS= read -r cmd; do
+        [ -z "$cmd" ] && continue
+        echo "=== $cmd ==="
+        eval "$cmd"
+      done
+      echo "Regression sweep clean."
+
+  - id: human-review
+    depends_on: [run-regression-sweep]
+    approval:
+      message: |
+        Bug fixed, new test passes, regression sweep clean. Review the diff
+        before merging:
+
+        - Run `git diff` from $GROUP_DIR (or from each repo's worktree for
+          group runs) to see the full change.
+        - Approve to mark the run complete. Reject + reason if you want the
+          AI to revise.
