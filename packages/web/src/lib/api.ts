@@ -334,6 +334,60 @@ export async function getConversation(platformId: string): Promise<ConversationD
   return fetchJSON<ConversationDetail>(`/api/conversations/${encodeURIComponent(platformId)}`);
 }
 
+// ─── Jira (Phase D) ──────────────────────────────────────────────────────────
+
+export interface JiraConfigStatus {
+  configured: boolean;
+  host: string | null;
+  email: string | null;
+  hasToken: boolean;
+  source: 'db' | 'env' | 'none';
+}
+
+export interface JiraTicket {
+  key: string;
+  summary: string;
+  status: string;
+  statusCategory: 'todo' | 'inprogress' | 'done' | 'unknown';
+  url: string;
+  projectKey: string;
+  updated: string;
+  assigneeName: string | null;
+}
+
+export async function getJiraConfig(): Promise<JiraConfigStatus> {
+  return fetchJSON<JiraConfigStatus>('/api/settings/jira');
+}
+
+export async function saveJiraConfig(input: {
+  host: string;
+  email: string;
+  token: string;
+}): Promise<JiraConfigStatus> {
+  return fetchJSON<JiraConfigStatus>('/api/settings/jira', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+}
+
+export async function clearJiraConfig(): Promise<{ success: boolean }> {
+  return fetchJSON<{ success: boolean }>('/api/settings/jira', { method: 'DELETE' });
+}
+
+export async function testJiraConnection(): Promise<{
+  ok: boolean;
+  accountId?: string;
+  displayName?: string;
+  error?: string;
+}> {
+  return fetchJSON('/api/jira/test', { method: 'POST' });
+}
+
+export async function listJiraTickets(): Promise<{ tickets: JiraTicket[] }> {
+  return fetchJSON<{ tickets: JiraTicket[] }>('/api/jira/tickets');
+}
+
 // ─── Per-conversation dev servers (Phase C) ─────────────────────────────────
 
 export interface DevServerStatus {

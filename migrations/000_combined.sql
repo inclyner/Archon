@@ -337,6 +337,13 @@ CREATE TABLE IF NOT EXISTS remote_agent_workspace_group_members (
 CREATE INDEX IF NOT EXISTS idx_workspace_group_members_codebase
   ON remote_agent_workspace_group_members(codebase_id);
 
+-- From migration 024: app-level key/value settings (Jira creds, etc.)
+CREATE TABLE IF NOT EXISTS remote_agent_app_settings (
+  key        VARCHAR(100) PRIMARY KEY,
+  value      TEXT NOT NULL,
+  updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
 -- From migration 023: FK from conversations.workspace_group_id → workspace_groups.
 -- Done after workspace_groups exists; the column itself was added inline above.
 DO $$

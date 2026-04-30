@@ -10,6 +10,7 @@
     "./db": "./src/db/index.ts",
     "./db/*": "./src/db/*.ts",
     "./dev-servers": "./src/dev-servers/index.ts",
+    "./jira": "./src/jira/index.ts",
     "./operations": "./src/operations/index.ts",
     "./operations/*": "./src/operations/*.ts",
     "./workflows": "./src/workflows/index.ts",

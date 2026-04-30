@@ -359,6 +359,14 @@ export class SqliteAdapter implements IDatabase {
         created_at TEXT DEFAULT (datetime('now'))
       );
 
+      -- App settings (key/value): user-editable settings persisted via the
+      -- Settings UI. First user is the Jira integration (Phase D).
+      CREATE TABLE IF NOT EXISTS remote_agent_app_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TEXT DEFAULT (datetime('now'))
+      );
+
       -- Workspace group members (junction: group ↔ codebase)
       CREATE TABLE IF NOT EXISTS remote_agent_workspace_group_members (
         group_id TEXT NOT NULL REFERENCES remote_agent_workspace_groups(id) ON DELETE CASCADE,

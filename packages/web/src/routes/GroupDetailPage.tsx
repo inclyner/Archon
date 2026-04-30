@@ -25,6 +25,7 @@ import { Separator } from '@/components/ui/separator';
 import { WorktreeList } from '@/components/workspace-groups/WorktreeList';
 import { RunGroupWorkflowDialog } from '@/components/workspace-groups/RunGroupWorkflowDialog';
 import { deleteWorkspaceGroup, getWorkspaceGroup } from '@/lib/api';
+import { TicketsPanel } from '@/components/workspace-groups/TicketsPanel';
 import { useState } from 'react';
 
 export function GroupDetailPage(): React.ReactElement {
@@ -193,6 +194,11 @@ export function GroupDetailPage(): React.ReactElement {
             </p>
           </div>
           <WorktreeList groupName={groupName} />
+        </section>
+
+        {/* Tickets (Phase D) */}
+        <section>
+          <TicketsPanel groupId={group.id} groupName={group.name} />
         </section>
 
         {/* Danger zone */}

@@ -76,7 +76,21 @@ import * as workflowEventDb from '@archon/core/db/workflow-events';
 import * as messageDb from '@archon/core/db/messages';
 import * as workspaceGroupDb from '@archon/core/db/workspace-groups';
 import { startDevServers, stopDevServers, getDevServerStatus } from '@archon/core/dev-servers';
+import {
+  getJiraConfigStatus,
+  getJiraCreds,
+  saveJiraCreds,
+  clearJiraCreds,
+  verifyJiraCreds,
+  getAssignedTickets,
+} from '@archon/core/jira';
 import { listGroupWorktrees, removeGroupWorktree } from '@archon/isolation';
+import {
+  jiraConfigStatusSchema,
+  jiraConfigInputSchema,
+  jiraTestResponseSchema,
+  jiraTicketsResponseSchema,
+} from './schemas/jira.schemas';
 import { errorSchema } from './schemas/common.schemas';
 import { updateCheckResponseSchema } from './schemas/system.schemas';
 import {
@@ -480,6 +494,82 @@ const devServersStatusRoute = createRoute({
       content: { 'application/json': { schema: devServerStatusResponseSchema } },
       description: 'Status',
     },
+    500: jsonError('Server error'),
+  },
+});
+
+// ─── Jira (Phase D) ──────────────────────────────────────────────────────────
+const jiraConfigGetRoute = createRoute({
+  method: 'get',
+  path: '/api/settings/jira',
+  tags: ['Settings'],
+  summary: 'Get current Jira configuration status (no token returned)',
+  responses: {
+    200: {
+      content: { 'application/json': { schema: jiraConfigStatusSchema } },
+      description: 'Status',
+    },
+    500: jsonError('Server error'),
+  },
+});
+
+const jiraConfigPutRoute = createRoute({
+  method: 'put',
+  path: '/api/settings/jira',
+  tags: ['Settings'],
+  summary: 'Save Jira credentials (host/email/token).',
+  request: {
+    body: { content: { 'application/json': { schema: jiraConfigInputSchema } } },
+  },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: jiraConfigStatusSchema } },
+      description: 'Saved',
+    },
+    400: jsonError('Validation error'),
+    500: jsonError('Server error'),
+  },
+});
+
+const jiraConfigDeleteRoute = createRoute({
+  method: 'delete',
+  path: '/api/settings/jira',
+  tags: ['Settings'],
+  summary: 'Clear Jira credentials',
+  responses: {
+    200: {
+      content: { 'application/json': { schema: successResponseSchema } },
+      description: 'Cleared',
+    },
+    500: jsonError('Server error'),
+  },
+});
+
+const jiraTestRoute = createRoute({
+  method: 'post',
+  path: '/api/jira/test',
+  tags: ['Settings'],
+  summary: 'Verify saved Jira credentials by hitting /myself',
+  responses: {
+    200: {
+      content: { 'application/json': { schema: jiraTestResponseSchema } },
+      description: 'Test result',
+    },
+    500: jsonError('Server error'),
+  },
+});
+
+const jiraTicketsRoute = createRoute({
+  method: 'get',
+  path: '/api/jira/tickets',
+  tags: ['Settings'],
+  summary: 'List tickets currently assigned to the configured user',
+  responses: {
+    200: {
+      content: { 'application/json': { schema: jiraTicketsResponseSchema } },
+      description: 'Tickets',
+    },
+    400: jsonError('Jira not configured'),
     500: jsonError('Server error'),
   },
 });
@@ -1824,6 +1914,70 @@ export function registerApiRoutes(
         getLog().debug({ conversationId }, 'sse_stream_closed');
       }
     });
+  });
+
+  // ─── Jira config + tickets (Phase D) ──────────────────────────────────────
+  registerOpenApiRoute(jiraConfigGetRoute, async c => {
+    try {
+      const status = await getJiraConfigStatus();
+      return c.json(status);
+    } catch (error) {
+      getLog().error({ err: error }, 'jira_config_get_failed');
+      return apiError(c, 500, 'Failed to read Jira config');
+    }
+  });
+
+  registerOpenApiRoute(jiraConfigPutRoute, async c => {
+    try {
+      const body = getValidatedBody(c, jiraConfigInputSchema);
+      await saveJiraCreds(body);
+      const status = await getJiraConfigStatus();
+      return c.json(status);
+    } catch (error) {
+      getLog().error({ err: error }, 'jira_config_put_failed');
+      return apiError(c, 500, 'Failed to save Jira config');
+    }
+  });
+
+  registerOpenApiRoute(jiraConfigDeleteRoute, async c => {
+    try {
+      await clearJiraCreds();
+      return c.json({ success: true });
+    } catch (error) {
+      getLog().error({ err: error }, 'jira_config_clear_failed');
+      return apiError(c, 500, 'Failed to clear Jira config');
+    }
+  });
+
+  registerOpenApiRoute(jiraTestRoute, async c => {
+    const creds = await getJiraCreds();
+    if (!creds) {
+      return c.json({ ok: false, error: 'Jira is not configured.' });
+    }
+    try {
+      const me = await verifyJiraCreds(creds);
+      return c.json({ ok: true, accountId: me.accountId, displayName: me.displayName });
+    } catch (e) {
+      return c.json({ ok: false, error: (e as Error).message });
+    }
+  });
+
+  registerOpenApiRoute(jiraTicketsRoute, async c => {
+    const creds = await getJiraCreds();
+    if (!creds) {
+      return apiError(
+        c,
+        400,
+        'Jira not configured. Set host, email, and token in Settings → Jira.'
+      );
+    }
+    try {
+      const tickets = await getAssignedTickets(creds);
+      return c.json({ tickets });
+    } catch (error) {
+      getLog().error({ err: error }, 'jira_tickets_failed');
+      return apiError(c, 500, (error as Error).message);
+    }
   });
 
   // GET /api/codebases - List codebases

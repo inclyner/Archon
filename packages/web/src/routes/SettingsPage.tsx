@@ -17,6 +17,10 @@ import {
   getCodebaseEnvVars,
   setCodebaseEnvVar,
   deleteCodebaseEnvVar,
+  getJiraConfig,
+  saveJiraConfig,
+  clearJiraConfig,
+  testJiraConnection,
 } from '@/lib/api';
 import type {
   SafeConfigResponse,
@@ -724,8 +728,180 @@ export function SettingsPage(): React.ReactElement {
           </div>
 
           <ProjectsSection />
+
+          <JiraSection />
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * Jira credentials panel for Phase D. Persists via the app_settings table
+ * so the user can edit creds without touching .env. Env-var fallback still
+ * works for power users — Settings just shows the source.
+ */
+function JiraSection(): React.ReactElement {
+  const queryClient = useQueryClient();
+  const { data: status, isLoading } = useQuery({
+    queryKey: ['jira-config'],
+    queryFn: getJiraConfig,
+  });
+  const [host, setHost] = useState('');
+  const [email, setEmail] = useState('');
+  const [token, setToken] = useState('');
+  const [testResult, setTestResult] = useState<string | null>(null);
+
+  // Prefill host/email when known (token is never returned for security).
+  useEffect(() => {
+    if (!status) return;
+    if (status.host && !host) setHost(status.host);
+    if (status.email && !email) setEmail(status.email);
+  }, [status, host, email]);
+
+  const save = useMutation({
+    mutationFn: () =>
+      saveJiraConfig({ host: host.trim(), email: email.trim(), token: token.trim() }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['jira-config'] });
+      setToken(''); // never keep the token in the form after save
+      setTestResult('Saved.');
+    },
+    onError: (e: Error) => {
+      setTestResult(`Save failed: ${e.message}`);
+    },
+  });
+
+  const clear = useMutation({
+    mutationFn: () => clearJiraConfig(),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['jira-config'] });
+      setHost('');
+      setEmail('');
+      setToken('');
+      setTestResult('Cleared.');
+    },
+  });
+
+  const test = useMutation({
+    mutationFn: () => testJiraConnection(),
+    onSuccess: result => {
+      if (result.ok) {
+        setTestResult(`Connected as ${result.displayName ?? 'unknown user'}.`);
+      } else {
+        setTestResult(`Failed: ${result.error ?? 'unknown error'}`);
+      }
+    },
+    onError: (e: Error) => {
+      setTestResult(`Failed: ${e.message}`);
+    },
+  });
+
+  const canSave = host.trim() && email.trim() && token.trim();
+  const sourceBadge =
+    status?.source === 'env' ? 'env vars' : status?.source === 'db' ? 'saved' : 'unset';
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Jira</CardTitle>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <p className="text-sm text-muted-foreground">Loading...</p>
+        ) : (
+          <div className="flex flex-col gap-3">
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-muted-foreground">Source:</span>
+              <Badge variant={status?.configured ? 'default' : 'secondary'}>{sourceBadge}</Badge>
+              {status?.configured && (
+                <Badge variant="outline">
+                  {status.email} @ {status.host}
+                </Badge>
+              )}
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-text-secondary">
+                Atlassian host (no scheme)
+              </label>
+              <Input
+                value={host}
+                onChange={(e): void => {
+                  setHost(e.target.value);
+                }}
+                placeholder="rimontech.atlassian.net"
+                disabled={save.isPending}
+              />
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-text-secondary">Email</label>
+              <Input
+                value={email}
+                onChange={(e): void => {
+                  setEmail(e.target.value);
+                }}
+                placeholder="you@example.com"
+                disabled={save.isPending}
+              />
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-text-secondary">
+                API token{' '}
+                <span className="text-text-tertiary">
+                  (id.atlassian.com → Manage profile → Security → API tokens)
+                </span>
+              </label>
+              <Input
+                type="password"
+                value={token}
+                onChange={(e): void => {
+                  setToken(e.target.value);
+                }}
+                placeholder={status?.hasToken ? '••••••••  (saved — paste to replace)' : ''}
+                disabled={save.isPending}
+              />
+            </div>
+
+            {testResult && (
+              <div className="rounded-md border border-border bg-surface-elevated px-3 py-2 text-xs">
+                {testResult}
+              </div>
+            )}
+
+            <div className="flex gap-2 pt-1">
+              <Button
+                onClick={(): void => {
+                  save.mutate();
+                }}
+                disabled={!canSave || save.isPending}
+              >
+                Save
+              </Button>
+              <Button
+                variant="outline"
+                onClick={(): void => {
+                  test.mutate();
+                }}
+                disabled={!status?.configured || test.isPending}
+              >
+                Test connection
+              </Button>
+              <Button
+                variant="ghost"
+                onClick={(): void => {
+                  clear.mutate();
+                }}
+                disabled={!status?.configured || clear.isPending}
+              >
+                Clear
+              </Button>
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }
