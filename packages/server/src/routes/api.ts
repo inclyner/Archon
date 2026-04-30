@@ -1268,16 +1268,20 @@ export function registerApiRoutes(
     }
   }
 
-  // GET /api/conversations - List conversations
+  // GET /api/conversations - List conversations. Filters are mutually
+  // exclusive at the data level (a conversation has at most one of
+  // codebase_id / workspace_group_id) so passing both is a no-op.
   registerOpenApiRoute(getConversationsRoute, async c => {
     try {
       const platformType = c.req.query('platform') ?? undefined;
       const codebaseId = c.req.query('codebaseId') ?? undefined;
+      const workspaceGroupId = c.req.query('workspaceGroupId') ?? undefined;
       const conversations = await conversationDb.listConversations(
         50,
         platformType,
         codebaseId,
-        true
+        true,
+        workspaceGroupId
       );
       return c.json(conversations);
     } catch (error) {
@@ -1302,10 +1306,22 @@ export function registerApiRoutes(
   });
 
   // POST /api/conversations - Create new conversation
-  // Accepts optional `message` field for atomic create+send (avoids ghost "Untitled" entries)
+  // Accepts optional `message` field for atomic create+send (avoids ghost "Untitled" entries).
+  // codebaseId and workspaceGroupId are mutually exclusive — caller picks one.
   registerOpenApiRoute(createConversationRoute, async c => {
     try {
-      const { codebaseId, message } = getValidatedBody(c, createConversationBodySchema);
+      const { codebaseId, workspaceGroupId, message } = getValidatedBody(
+        c,
+        createConversationBodySchema
+      );
+
+      if (codebaseId && workspaceGroupId) {
+        return apiError(
+          c,
+          400,
+          'Conversation cannot be scoped to both a codebase and a workspace group. Pick one.'
+        );
+      }
 
       // Validate codebase exists if provided
       if (codebaseId) {
@@ -1315,12 +1331,27 @@ export function registerApiRoutes(
         }
       }
 
+      // Validate workspace group exists if provided
+      if (workspaceGroupId) {
+        const group = await workspaceGroupDb.getGroupById(workspaceGroupId);
+        if (!group) {
+          return apiError(
+            c,
+            400,
+            'Workspace group not found',
+            `No workspace group with id "${workspaceGroupId}"`
+          );
+        }
+      }
+
       const conversationId = `web-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
       const conversation = await conversationDb.getOrCreateConversation(
         'web',
         conversationId,
-        codebaseId
+        codebaseId,
+        undefined,
+        workspaceGroupId
       );
       webAdapter.setConversationDbId(conversation.platform_conversation_id, conversation.id);
 
@@ -1975,7 +2006,17 @@ export function registerApiRoutes(
 
       const successes = summary.filter(s => s.codebaseId !== null);
       if (successes.length === 0) {
-        return apiError(c, 400, 'Failed to register any child repos.');
+        // Surface the per-child failures so the user can see WHY each repo
+        // was rejected (path issues, not-a-git-repo, name validation, etc.)
+        // instead of a generic "Failed to register" message.
+        const details = summary
+          .map(s => `  - ${s.relativePath}: ${s.error ?? 'unknown error'}`)
+          .join('\n');
+        return apiError(
+          c,
+          400,
+          `Failed to register any child repos under ${parentPath}:\n${details}`
+        );
       }
 
       // Atomic: createGroup + addMember loop in a single transaction so a

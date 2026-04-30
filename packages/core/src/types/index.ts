@@ -24,6 +24,13 @@ export interface Conversation {
   platform_type: string;
   platform_conversation_id: string;
   codebase_id: string | null;
+  /**
+   * Set when this conversation is scoped to a workspace group (cross-repo
+   * chat). Mutually exclusive with codebase_id — enforced at the DB-helper
+   * boundary (see validateConversationScope in db/conversations.ts), not via
+   * a DB constraint.
+   */
+  workspace_group_id: string | null;
   cwd: string | null;
   isolation_env_id: string | null; // UUID FK to isolation_environments
   ai_assistant_type: string;

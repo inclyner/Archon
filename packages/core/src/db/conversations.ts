@@ -6,6 +6,24 @@ import type { Conversation } from '../types';
 import { ConversationNotFoundError } from '../types';
 import { createLogger } from '@archon/paths';
 
+/**
+ * Guard that codebase_id and workspace_group_id are not BOTH set on the same
+ * conversation. We don't add a DB CHECK constraint for this — Postgres can't
+ * easily enforce "at most one of these FKs is set" without a trigger, and a
+ * trigger is heavyweight for a single-developer tool. The two writes that can
+ * set these columns (insert + update) both call this helper.
+ */
+export function validateConversationScope(input: {
+  codebaseId?: string | null;
+  workspaceGroupId?: string | null;
+}): void {
+  if (input.codebaseId && input.workspaceGroupId) {
+    throw new Error(
+      'Conversation cannot be scoped to both a codebase and a workspace group. Pick one.'
+    );
+  }
+}
+
 /** Lazy-initialized logger (deferred so test mocks can intercept createLogger) */
 let cachedLog: ReturnType<typeof createLogger> | undefined;
 function getLog(): ReturnType<typeof createLogger> {
@@ -58,8 +76,11 @@ export async function getOrCreateConversation(
   platformType: string,
   platformId: string,
   codebaseId?: string,
-  parentConversationId?: string
+  parentConversationId?: string,
+  workspaceGroupId?: string
 ): Promise<Conversation> {
+  validateConversationScope({ codebaseId, workspaceGroupId });
+
   const existing = await pool.query<Conversation>(
     'SELECT * FROM remote_agent_conversations WHERE platform_type = $1 AND platform_conversation_id = $2',
     [platformType, platformId]
@@ -71,6 +92,7 @@ export async function getOrCreateConversation(
 
   // Check if we should inherit from a parent conversation (e.g., Discord thread inheriting from parent channel)
   let inheritedCodebaseId: string | null = null;
+  let inheritedWorkspaceGroupId: string | null = null;
   let inheritedCwd: string | null = null;
   let assistantType = process.env.DEFAULT_AI_ASSISTANT ?? 'claude';
 
@@ -80,20 +102,25 @@ export async function getOrCreateConversation(
       [platformType, parentConversationId]
     );
     if (parent.rows[0]) {
-      inheritedCodebaseId = parent.rows[0].codebase_id;
-      inheritedCwd = parent.rows[0].cwd;
+      inheritedCodebaseId = parent.rows[0].codebase_id ?? null;
+      inheritedWorkspaceGroupId = parent.rows[0].workspace_group_id ?? null;
+      inheritedCwd = parent.rows[0].cwd ?? null;
       assistantType = parent.rows[0].ai_assistant_type;
       getLog().debug(
-        { inheritedCodebaseId, inheritedCwd },
+        { inheritedCodebaseId, inheritedWorkspaceGroupId, inheritedCwd },
         'db.conversation_parent_context_inherited'
       );
     }
   }
 
-  // Use provided codebase or inherited codebase
-  const finalCodebaseId = codebaseId ?? inheritedCodebaseId;
+  // Caller-provided scope wins over inherited. The two are mutually exclusive
+  // (validated above) so we don't need to clear the other when one is set.
+  const finalCodebaseId = codebaseId ?? (workspaceGroupId ? null : inheritedCodebaseId);
+  const finalWorkspaceGroupId = workspaceGroupId ?? (codebaseId ? null : inheritedWorkspaceGroupId);
 
-  // Determine assistant type from codebase if provided (overrides inherited)
+  // Determine assistant type from codebase if provided (overrides inherited).
+  // Group-scoped conversations fall back to the env default — no per-group
+  // assistant override yet (deferred to a later phase).
   if (codebaseId) {
     const codebase = await pool.query<{ ai_assistant_type: string }>(
       'SELECT ai_assistant_type FROM remote_agent_codebases WHERE id = $1',
@@ -105,8 +132,8 @@ export async function getOrCreateConversation(
   }
 
   const created = await pool.query<Conversation>(
-    'INSERT INTO remote_agent_conversations (platform_type, platform_conversation_id, ai_assistant_type, codebase_id, cwd) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-    [platformType, platformId, assistantType, finalCodebaseId, inheritedCwd]
+    'INSERT INTO remote_agent_conversations (platform_type, platform_conversation_id, ai_assistant_type, codebase_id, workspace_group_id, cwd) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+    [platformType, platformId, assistantType, finalCodebaseId, finalWorkspaceGroupId, inheritedCwd]
   );
 
   return created.rows[0];
@@ -114,10 +141,17 @@ export async function getOrCreateConversation(
 
 export async function updateConversation(
   id: string,
-  updates: Partial<Pick<Conversation, 'codebase_id' | 'cwd' | 'isolation_env_id'>> & {
+  updates: Partial<
+    Pick<Conversation, 'codebase_id' | 'workspace_group_id' | 'cwd' | 'isolation_env_id'>
+  > & {
     hidden?: boolean;
   }
 ): Promise<void> {
+  validateConversationScope({
+    codebaseId: updates.codebase_id,
+    workspaceGroupId: updates.workspace_group_id,
+  });
+
   const fields: string[] = [];
   const values: (string | number | null)[] = [];
   let i = 1;
@@ -125,6 +159,10 @@ export async function updateConversation(
   if (updates.codebase_id !== undefined) {
     fields.push(`codebase_id = $${String(i++)}`);
     values.push(updates.codebase_id);
+  }
+  if (updates.workspace_group_id !== undefined) {
+    fields.push(`workspace_group_id = $${String(i++)}`);
+    values.push(updates.workspace_group_id);
   }
   if (updates.cwd !== undefined) {
     fields.push(`cwd = $${String(i++)}`);
@@ -184,13 +222,17 @@ export async function getConversationsByIsolationEnvId(
 }
 
 /**
- * List all conversations ordered by recent activity
+ * List all conversations ordered by recent activity. Optional scope filters
+ * (codebaseId, workspaceGroupId) are mutually exclusive at the data level —
+ * passing both will return zero rows because conversations only ever have one
+ * of the two set, so we don't validate it here.
  */
 export async function listConversations(
   limit = 50,
   platformType?: string,
   codebaseId?: string,
-  excludeEmpty = false
+  excludeEmpty = false,
+  workspaceGroupId?: string
 ): Promise<readonly Conversation[]> {
   const params: unknown[] = [];
   let sql =
@@ -209,6 +251,11 @@ export async function listConversations(
   if (codebaseId) {
     params.push(codebaseId);
     sql += ` AND codebase_id = $${String(params.length)}`;
+  }
+
+  if (workspaceGroupId) {
+    params.push(workspaceGroupId);
+    sql += ` AND workspace_group_id = $${String(params.length)}`;
   }
 
   sql += ' ORDER BY last_activity_at DESC NULLS LAST';

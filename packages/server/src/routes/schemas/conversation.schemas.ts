@@ -10,6 +10,7 @@ export const conversationSchema = z
     platform_type: z.string(),
     platform_conversation_id: z.string(),
     codebase_id: z.string().nullable(),
+    workspace_group_id: z.string().nullable(),
     cwd: z.string().nullable(),
     isolation_env_id: z.string().nullable(),
     ai_assistant_type: z.string(),
@@ -26,6 +27,7 @@ export const conversationSchema = z
 export const listConversationsQuerySchema = z.object({
   platform: z.string().optional(),
   codebaseId: z.string().optional(),
+  workspaceGroupId: z.string().optional(),
 });
 
 /** GET /api/conversations response. */
@@ -36,10 +38,15 @@ export const conversationListResponseSchema = z
 /** Path params for routes with :id (platform conversation ID). */
 export const conversationIdParamsSchema = z.object({ id: z.string() });
 
-/** POST /api/conversations request body. Uses strict() to reject unknown fields (e.g. conversationId). */
+/**
+ * POST /api/conversations request body. Uses strict() to reject unknown fields
+ * (e.g. conversationId). codebaseId and workspaceGroupId are mutually
+ * exclusive; the handler validates that at most one is set.
+ */
 export const createConversationBodySchema = z
   .object({
     codebaseId: z.string().optional(),
+    workspaceGroupId: z.string().optional(),
     message: z.string().optional(),
   })
   .strict()

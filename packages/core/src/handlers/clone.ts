@@ -329,8 +329,14 @@ export async function registerRepository(localPath: string): Promise<RegisterRes
   if (remoteUrl) {
     const cleaned = remoteUrl.replace(/\.git$/, '').replace(/\/+$/, '');
     let workingRemote = cleaned;
-    if (cleaned.startsWith('git@github.com:')) {
-      workingRemote = cleaned.replace('git@github.com:', 'https://github.com/');
+    // Normalize any SSH-style remote (git@host:owner/repo) to https form so
+    // the rest of the code can split owner/repo on '/'. Previously this only
+    // handled github.com — bitbucket/gitlab/self-hosted would leak the
+    // `git@host:owner` literal into ownerName, which on Windows breaks
+    // mkdir at ~/.archon/workspaces/<owner>/ because of the `:`.
+    const sshMatch = /^git@([^:]+):(.*)$/.exec(cleaned);
+    if (sshMatch) {
+      workingRemote = `https://${sshMatch[1]}/${sshMatch[2]}`;
     }
     const parts = workingRemote.split('/');
     const r = parts.pop();

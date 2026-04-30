@@ -85,8 +85,8 @@ describe('conversations', () => {
       expect(mockQuery).toHaveBeenCalledTimes(2);
       expect(mockQuery).toHaveBeenNthCalledWith(
         2,
-        'INSERT INTO remote_agent_conversations (platform_type, platform_conversation_id, ai_assistant_type, codebase_id, cwd) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-        ['telegram', 'chat-789', 'claude', null, null]
+        'INSERT INTO remote_agent_conversations (platform_type, platform_conversation_id, ai_assistant_type, codebase_id, workspace_group_id, cwd) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+        ['telegram', 'chat-789', 'claude', null, null, null]
       );
     });
 
@@ -116,8 +116,8 @@ describe('conversations', () => {
       );
       expect(mockQuery).toHaveBeenNthCalledWith(
         3,
-        'INSERT INTO remote_agent_conversations (platform_type, platform_conversation_id, ai_assistant_type, codebase_id, cwd) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-        ['telegram', 'chat-789', 'codex', 'codebase-123', null]
+        'INSERT INTO remote_agent_conversations (platform_type, platform_conversation_id, ai_assistant_type, codebase_id, workspace_group_id, cwd) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+        ['telegram', 'chat-789', 'codex', 'codebase-123', null, null]
       );
     });
 
@@ -139,8 +139,8 @@ describe('conversations', () => {
       expect(result).toEqual(newConversation);
       expect(mockQuery).toHaveBeenNthCalledWith(
         2,
-        'INSERT INTO remote_agent_conversations (platform_type, platform_conversation_id, ai_assistant_type, codebase_id, cwd) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-        ['telegram', 'chat-789', 'codex', null, null]
+        'INSERT INTO remote_agent_conversations (platform_type, platform_conversation_id, ai_assistant_type, codebase_id, workspace_group_id, cwd) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+        ['telegram', 'chat-789', 'codex', null, null, null]
       );
     });
 
@@ -162,8 +162,8 @@ describe('conversations', () => {
       expect(result).toEqual(newConversation);
       expect(mockQuery).toHaveBeenNthCalledWith(
         3,
-        'INSERT INTO remote_agent_conversations (platform_type, platform_conversation_id, ai_assistant_type, codebase_id, cwd) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-        ['telegram', 'chat-789', 'claude', 'non-existent-codebase', null]
+        'INSERT INTO remote_agent_conversations (platform_type, platform_conversation_id, ai_assistant_type, codebase_id, workspace_group_id, cwd) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+        ['telegram', 'chat-789', 'claude', 'non-existent-codebase', null, null]
       );
     });
 
@@ -210,8 +210,8 @@ describe('conversations', () => {
       // Verify inherited values in INSERT
       expect(mockQuery).toHaveBeenNthCalledWith(
         3,
-        'INSERT INTO remote_agent_conversations (platform_type, platform_conversation_id, ai_assistant_type, codebase_id, cwd) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-        ['discord', 'thread-123', 'codex', 'codebase-123', '/workspace/project']
+        'INSERT INTO remote_agent_conversations (platform_type, platform_conversation_id, ai_assistant_type, codebase_id, workspace_group_id, cwd) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+        ['discord', 'thread-123', 'codex', 'codebase-123', null, '/workspace/project']
       );
     });
 
@@ -244,9 +244,43 @@ describe('conversations', () => {
       // Should use inherited assistant type but null for codebase/cwd
       expect(mockQuery).toHaveBeenNthCalledWith(
         3,
-        'INSERT INTO remote_agent_conversations (platform_type, platform_conversation_id, ai_assistant_type, codebase_id, cwd) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-        ['discord', 'thread-123', 'claude', null, null]
+        'INSERT INTO remote_agent_conversations (platform_type, platform_conversation_id, ai_assistant_type, codebase_id, workspace_group_id, cwd) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+        ['discord', 'thread-123', 'claude', null, null, null]
       );
+    });
+
+    test('persists workspaceGroupId when caller passes one', async () => {
+      const newConversation: Conversation = {
+        ...existingConversation,
+        id: 'conv-group',
+        workspace_group_id: 'group-abc',
+      };
+
+      mockQuery.mockResolvedValueOnce(createQueryResult([])); // existing lookup
+      mockQuery.mockResolvedValueOnce(createQueryResult([newConversation])); // INSERT
+
+      const result = await getOrCreateConversation(
+        'web',
+        'web-chat-rimon',
+        undefined,
+        undefined,
+        'group-abc'
+      );
+
+      expect(result).toEqual(newConversation);
+      expect(mockQuery).toHaveBeenNthCalledWith(
+        2,
+        'INSERT INTO remote_agent_conversations (platform_type, platform_conversation_id, ai_assistant_type, codebase_id, workspace_group_id, cwd) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+        ['web', 'web-chat-rimon', 'claude', null, 'group-abc', null]
+      );
+    });
+
+    test('throws when both codebaseId and workspaceGroupId are passed', async () => {
+      // Mutual exclusion is the central invariant of the group-scoped chat
+      // model — never let a single conversation try to live in both worlds.
+      await expect(
+        getOrCreateConversation('web', 'web-bad', 'codebase-x', undefined, 'group-y')
+      ).rejects.toThrow(/cannot be scoped to both/);
     });
   });
 

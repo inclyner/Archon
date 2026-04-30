@@ -68,6 +68,10 @@ CREATE TABLE IF NOT EXISTS remote_agent_conversations (
   platform_type VARCHAR(20) NOT NULL,
   platform_conversation_id VARCHAR(255) NOT NULL,
   codebase_id UUID REFERENCES remote_agent_codebases(id) ON DELETE SET NULL,
+  -- FK to remote_agent_workspace_groups added after that table is created
+  -- below in this same script (forward references aren't allowed in a single
+  -- ALTER block but ALTER TABLE later in the file works fine).
+  workspace_group_id UUID,
   cwd VARCHAR(500),
   ai_assistant_type VARCHAR(20) DEFAULT 'claude',
   isolation_env_id UUID,  -- FK added after isolation_environments table exists
@@ -86,6 +90,8 @@ CREATE INDEX IF NOT EXISTS idx_conversations_hidden
   ON remote_agent_conversations(hidden);
 CREATE INDEX IF NOT EXISTS idx_conversations_codebase
   ON remote_agent_conversations(codebase_id) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_conversations_workspace_group
+  ON remote_agent_conversations(workspace_group_id) WHERE deleted_at IS NULL;
 
 COMMENT ON COLUMN remote_agent_conversations.isolation_env_id IS
   'UUID reference to isolation_environments table (the only isolation reference)';
@@ -330,3 +336,17 @@ CREATE TABLE IF NOT EXISTS remote_agent_workspace_group_members (
 
 CREATE INDEX IF NOT EXISTS idx_workspace_group_members_codebase
   ON remote_agent_workspace_group_members(codebase_id);
+
+-- From migration 023: FK from conversations.workspace_group_id → workspace_groups.
+-- Done after workspace_groups exists; the column itself was added inline above.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'remote_agent_conversations_workspace_group_id_fkey'
+  ) THEN
+    ALTER TABLE remote_agent_conversations
+      ADD CONSTRAINT remote_agent_conversations_workspace_group_id_fkey
+      FOREIGN KEY (workspace_group_id)
+      REFERENCES remote_agent_workspace_groups(id) ON DELETE SET NULL;
+  END IF;
+END $$;

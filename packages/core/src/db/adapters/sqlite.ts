@@ -178,6 +178,15 @@ export class SqliteAdapter implements IDatabase {
       if (!colNames.has('hidden')) {
         this.db.run('ALTER TABLE remote_agent_conversations ADD COLUMN hidden INTEGER DEFAULT 0');
       }
+      if (!colNames.has('workspace_group_id')) {
+        this.db.run('ALTER TABLE remote_agent_conversations ADD COLUMN workspace_group_id TEXT');
+      }
+      // Index creation lives here (not in createSchema) because it depends on
+      // workspace_group_id existing — and for pre-existing DBs that column is
+      // only added by the ALTER TABLE above.
+      this.db.run(
+        'CREATE INDEX IF NOT EXISTS idx_conversations_workspace_group ON remote_agent_conversations(workspace_group_id) WHERE deleted_at IS NULL'
+      );
     } catch (e: unknown) {
       getLog().warn({ err: e as Error }, 'db.sqlite_migration_conversations_columns_failed');
     }
@@ -259,6 +268,12 @@ export class SqliteAdapter implements IDatabase {
         platform_conversation_id TEXT NOT NULL,
         ai_assistant_type TEXT DEFAULT 'claude',
         codebase_id TEXT REFERENCES remote_agent_codebases(id) ON DELETE SET NULL,
+        -- workspace_group_id has no inline FK in SQLite because the
+        -- workspace_groups table is declared further down in this same
+        -- createSchema() block; SQLite resolves FKs at parse time. The FK is
+        -- present in the Postgres migration (023) where ordering is fine, and
+        -- mutual exclusion with codebase_id is enforced in app code.
+        workspace_group_id TEXT,
         cwd TEXT,
         isolation_env_id TEXT,
         title TEXT,
@@ -379,6 +394,8 @@ export class SqliteAdapter implements IDatabase {
       CREATE INDEX IF NOT EXISTS idx_conversations_hidden ON remote_agent_conversations(hidden);
       DROP INDEX IF EXISTS idx_conversations_codebase;
       CREATE INDEX IF NOT EXISTS idx_conversations_codebase ON remote_agent_conversations(codebase_id) WHERE deleted_at IS NULL;
+      -- idx_conversations_workspace_group is created in migrateColumns(), AFTER
+      -- the ALTER TABLE that adds the column for pre-existing DBs.
       CREATE INDEX IF NOT EXISTS idx_conversations_isolation_env_id ON remote_agent_conversations(isolation_env_id);
       CREATE INDEX IF NOT EXISTS idx_sessions_codebase ON remote_agent_sessions(codebase_id);
       CREATE INDEX IF NOT EXISTS idx_isolation_env_status ON remote_agent_isolation_environments(status);
