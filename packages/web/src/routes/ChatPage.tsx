@@ -7,7 +7,14 @@ import { ConversationItem } from '@/components/conversations/ConversationItem';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { useProject } from '@/contexts/ProjectContext';
-import { listConversations, listWorkflowRuns, addCodebase, getCodebaseInput } from '@/lib/api';
+import {
+  listConversations,
+  listWorkflowRuns,
+  addCodebase,
+  getCodebaseInput,
+  getConversation,
+} from '@/lib/api';
+import { DevServersPanel } from '@/components/workspace-groups/DevServersPanel';
 import type { CodebaseResponse } from '@/lib/api';
 import { cn } from '@/lib/utils';
 
@@ -320,8 +327,23 @@ export function ChatPage(): React.ReactElement {
 
       {/* Right panel - chat interface */}
       <div className="flex flex-1 flex-col overflow-hidden">
+        {conversationId && <ChatHeader conversationId={conversationId} />}
         <ChatInterface key={conversationId ?? 'new'} conversationId={conversationId ?? 'new'} />
       </div>
     </div>
   );
+}
+
+/**
+ * Renders dev-server controls for group-scoped conversations. Plain (codebase
+ * or unscoped) conversations get nothing — the panel just doesn't mount.
+ */
+function ChatHeader({ conversationId }: { conversationId: string }): React.ReactElement | null {
+  const { data: conv } = useQuery({
+    queryKey: ['conversation-detail', conversationId],
+    queryFn: () => getConversation(conversationId),
+    staleTime: 30_000,
+  });
+  if (!conv?.workspace_group_id) return null;
+  return <DevServersPanel conversationId={conversationId} />;
 }

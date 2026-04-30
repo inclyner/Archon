@@ -75,6 +75,7 @@ import * as workflowDb from '@archon/core/db/workflows';
 import * as workflowEventDb from '@archon/core/db/workflow-events';
 import * as messageDb from '@archon/core/db/messages';
 import * as workspaceGroupDb from '@archon/core/db/workspace-groups';
+import { startDevServers, stopDevServers, getDevServerStatus } from '@archon/core/dev-servers';
 import { listGroupWorktrees, removeGroupWorktree } from '@archon/isolation';
 import { errorSchema } from './schemas/common.schemas';
 import { updateCheckResponseSchema } from './schemas/system.schemas';
@@ -110,6 +111,8 @@ import {
   messageListResponseSchema,
   listMessagesQuerySchema,
   dispatchResponseSchema,
+  devServerStartResponseSchema,
+  devServerStatusResponseSchema,
 } from './schemas/conversation.schemas';
 import {
   codebaseListResponseSchema,
@@ -432,6 +435,54 @@ const sendMessageRoute = createRoute({
 // =========================================================================
 // Codebase route configs
 // =========================================================================
+
+// ─── Per-conversation dev servers (Phase C) ─────────────────────────────────
+const devServersStartRoute = createRoute({
+  method: 'post',
+  path: '/api/conversations/{id}/dev-servers/start',
+  tags: ['Conversations'],
+  summary: 'Start dev servers for a group-scoped conversation',
+  request: { params: conversationIdParamsSchema },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: devServerStartResponseSchema } },
+      description: 'Servers starting',
+    },
+    400: jsonError('Conversation is not group-scoped'),
+    404: jsonError('Conversation not found'),
+    500: jsonError('Server error'),
+  },
+});
+
+const devServersStopRoute = createRoute({
+  method: 'post',
+  path: '/api/conversations/{id}/dev-servers/stop',
+  tags: ['Conversations'],
+  summary: 'Stop dev servers for a conversation',
+  request: { params: conversationIdParamsSchema },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: successResponseSchema } },
+      description: 'Stopped',
+    },
+    500: jsonError('Server error'),
+  },
+});
+
+const devServersStatusRoute = createRoute({
+  method: 'get',
+  path: '/api/conversations/{id}/dev-servers',
+  tags: ['Conversations'],
+  summary: "Status snapshot for a conversation's dev servers",
+  request: { params: conversationIdParamsSchema },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: devServerStatusResponseSchema } },
+      description: 'Status',
+    },
+    500: jsonError('Server error'),
+  },
+});
 
 const listCodebasesRoute = createRoute({
   method: 'get',
@@ -1418,6 +1469,56 @@ export function registerApiRoutes(
     }
   });
 
+  // POST /api/conversations/:id/dev-servers/start
+  registerOpenApiRoute(devServersStartRoute, async c => {
+    const platformId = c.req.param('id') ?? '';
+    try {
+      const conv = await conversationDb.findConversationByPlatformId(platformId);
+      if (!conv) return apiError(c, 404, 'Conversation not found');
+      if (!conv.workspace_group_id) {
+        return apiError(
+          c,
+          400,
+          'Conversation is not group-scoped. Dev servers only run for group chats.'
+        );
+      }
+      // Idle timeout: 30 min default. Config wiring (.archon/config.yaml
+      // groupChat.devServers.idleTimeoutMinutes) is a follow-up.
+      const result = await startDevServers(conv, { idleTimeoutMs: 30 * 60_000 });
+      return c.json(result);
+    } catch (error) {
+      getLog().error({ err: error, platformId }, 'dev_servers_start_failed');
+      return apiError(c, 500, `Failed to start dev servers: ${(error as Error).message}`);
+    }
+  });
+
+  // POST /api/conversations/:id/dev-servers/stop
+  registerOpenApiRoute(devServersStopRoute, async c => {
+    const platformId = c.req.param('id') ?? '';
+    try {
+      const conv = await conversationDb.findConversationByPlatformId(platformId);
+      if (!conv) return apiError(c, 404, 'Conversation not found');
+      await stopDevServers(conv.id);
+      return c.json({ success: true });
+    } catch (error) {
+      getLog().error({ err: error, platformId }, 'dev_servers_stop_failed');
+      return apiError(c, 500, 'Failed to stop dev servers');
+    }
+  });
+
+  // GET /api/conversations/:id/dev-servers
+  registerOpenApiRoute(devServersStatusRoute, async c => {
+    const platformId = c.req.param('id') ?? '';
+    try {
+      const conv = await conversationDb.findConversationByPlatformId(platformId);
+      if (!conv) return c.json({ servers: [] });
+      return c.json(getDevServerStatus(conv.id));
+    } catch (error) {
+      getLog().error({ err: error, platformId }, 'dev_servers_status_failed');
+      return apiError(c, 500, 'Failed to read dev-server status');
+    }
+  });
+
   // DELETE /api/conversations/:id - Soft delete
   registerOpenApiRoute(deleteConversationRoute, async c => {
     const platformId = c.req.param('id') ?? '';
@@ -1425,6 +1526,16 @@ export function registerApiRoutes(
       const conv = await conversationDb.findConversationByPlatformId(platformId);
       if (!conv) {
         return apiError(c, 404, 'Conversation not found');
+      }
+      // Stop any running dev servers before soft-deleting the conversation.
+      // Otherwise the user has zombie processes holding ports.
+      try {
+        await stopDevServers(conv.id);
+      } catch (e) {
+        getLog().warn(
+          { err: e as Error, conversationId: conv.id },
+          'dev_servers.stop_on_delete_failed'
+        );
       }
       await conversationDb.softDeleteConversation(conv.id);
       return c.json({ success: true });

@@ -63,6 +63,7 @@ import { MessagePersistence } from './adapters/web/persistence';
 import { SSETransport } from './adapters/web/transport';
 import { WorkflowEventBridge } from './adapters/web/workflow-bridge';
 import { registerApiRoutes } from './routes/api';
+import { startIdleSweeper } from '@archon/core/dev-servers';
 import {
   handleMessage,
   pool,
@@ -611,6 +612,12 @@ export async function startServer(opts: ServerOptions = {}): Promise<void> {
     idleTimeout: 255, // Max value (seconds) - prevents SSE connections from being killed
   });
   getLog().info({ port: server.port, hostname }, 'server_listening');
+
+  // Per-conversation dev-server auto-stop sweeper (Phase C). Walks the
+  // process-manager registry every minute and kills servers whose
+  // conversation has been idle past its timeout. Idempotent — safe to call
+  // even when no group conversations exist.
+  startIdleSweeper();
 
   // Initialize Telegram adapter (conditional, skipped in CLI serve mode)
   let telegram: TelegramAdapter | null = null;

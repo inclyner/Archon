@@ -312,6 +312,73 @@ export async function deleteWorkspaceGroupWorktree(
   );
 }
 
+export interface ConversationDetail {
+  id: string;
+  platform_type: string;
+  platform_conversation_id: string;
+  codebase_id: string | null;
+  workspace_group_id: string | null;
+  cwd: string | null;
+  isolation_env_id: string | null;
+  ai_assistant_type: string;
+  title: string | null;
+  hidden: boolean;
+  deleted_at: string | null;
+  last_activity_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Look up a conversation by its platform conversation id (URL param). */
+export async function getConversation(platformId: string): Promise<ConversationDetail> {
+  return fetchJSON<ConversationDetail>(`/api/conversations/${encodeURIComponent(platformId)}`);
+}
+
+// ─── Per-conversation dev servers (Phase C) ─────────────────────────────────
+
+export interface DevServerStatus {
+  codebaseId: string;
+  label: string;
+  port: number;
+  pid: number | null;
+  state: 'starting' | 'ready' | 'crashed' | 'stopped';
+  url: string;
+  logTail: string[];
+  message: string | null;
+}
+
+export interface DevServerStartResponse {
+  servers: DevServerStatus[];
+  skipped: { codebaseId: string; relativePath: string; reason: string }[];
+  groupDir: string;
+}
+
+export async function startConversationDevServers(
+  conversationId: string
+): Promise<DevServerStartResponse> {
+  return fetchJSON<DevServerStartResponse>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/dev-servers/start`,
+    { method: 'POST' }
+  );
+}
+
+export async function stopConversationDevServers(
+  conversationId: string
+): Promise<{ success: boolean }> {
+  return fetchJSON<{ success: boolean }>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/dev-servers/stop`,
+    { method: 'POST' }
+  );
+}
+
+export async function getConversationDevServerStatus(
+  conversationId: string
+): Promise<{ servers: DevServerStatus[] }> {
+  return fetchJSON<{ servers: DevServerStatus[] }>(
+    `/api/conversations/${encodeURIComponent(conversationId)}/dev-servers`
+  );
+}
+
 export interface RunGroupWorkflowResponse {
   accepted: boolean;
   groupName: string;

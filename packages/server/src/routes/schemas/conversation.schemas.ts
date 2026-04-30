@@ -113,3 +113,39 @@ export const dispatchResponseSchema = z
     status: z.string(),
   })
   .openapi('DispatchResponse');
+
+/** Per-server status for /dev-servers endpoints. */
+export const devServerStatusSchema = z
+  .object({
+    codebaseId: z.string(),
+    label: z.string(),
+    port: z.number(),
+    pid: z.number().nullable(),
+    state: z.enum(['starting', 'ready', 'crashed', 'stopped']),
+    url: z.string(),
+    logTail: z.array(z.string()),
+    message: z.string().nullable(),
+  })
+  .openapi('DevServerStatus');
+
+/** Response for POST /dev-servers/start. */
+export const devServerStartResponseSchema = z
+  .object({
+    servers: z.array(devServerStatusSchema),
+    skipped: z.array(
+      z.object({
+        codebaseId: z.string(),
+        relativePath: z.string(),
+        reason: z.string(),
+      })
+    ),
+    groupDir: z.string(),
+  })
+  .openapi('DevServerStartResponse');
+
+/** Response for GET /dev-servers (status). */
+export const devServerStatusResponseSchema = z
+  .object({
+    servers: z.array(devServerStatusSchema),
+  })
+  .openapi('DevServerStatusResponse');
