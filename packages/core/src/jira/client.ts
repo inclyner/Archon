@@ -189,6 +189,101 @@ function mapStatusCategory(key: string): JiraTicket['statusCategory'] {
   return 'unknown';
 }
 
+export interface JiraProjectSummary {
+  id: string;
+  key: string;
+  name: string;
+}
+
+interface JiraProjectSearchResponse {
+  values: { id: string; key: string; name: string }[];
+}
+
+/**
+ * List Jira projects the authenticated user can see. Used to populate the
+ * "default project" picker in the Slack settings card.
+ */
+export async function listJiraProjects(creds: JiraCreds): Promise<JiraProjectSummary[]> {
+  const url = new URL(`https://${creds.host}/rest/api/3/project/search`);
+  url.searchParams.set('maxResults', '100');
+  const res = await fetch(url, {
+    headers: { Authorization: authHeader(creds), Accept: 'application/json' },
+  });
+  if (!res.ok) {
+    throw new Error(`Jira project list failed: ${String(res.status)}`);
+  }
+  const data = (await res.json()) as JiraProjectSearchResponse;
+  return data.values.map(p => ({ id: p.id, key: p.key, name: p.name }));
+}
+
+export interface JiraCreatedIssue {
+  id: string;
+  key: string;
+  url: string;
+}
+
+/**
+ * Create a Jira issue. v1: hardcodes issue type to "Task" — most "make a
+ * ticket from this Slack message" use cases want Task. Configurable later.
+ *
+ * Description is plain text; we wrap it in minimal ADF (Atlassian Document
+ * Format) — one paragraph per blank-line-separated chunk.
+ */
+export async function createJiraIssue(
+  creds: JiraCreds,
+  input: { projectKey: string; summary: string; description: string }
+): Promise<JiraCreatedIssue> {
+  const adfDescription = {
+    type: 'doc',
+    version: 1,
+    content: input.description
+      .split(/\n{2,}/)
+      .filter(p => p.trim().length > 0)
+      .map(paragraph => ({
+        type: 'paragraph',
+        content: [{ type: 'text', text: paragraph }],
+      })),
+  };
+  // Empty description → one empty paragraph (ADF requires non-empty content).
+  if (adfDescription.content.length === 0) {
+    adfDescription.content.push({
+      type: 'paragraph',
+      content: [{ type: 'text', text: '(no description)' }],
+    });
+  }
+  const url = `https://${creds.host}/rest/api/3/issue`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: authHeader(creds),
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    },
+    body: JSON.stringify({
+      fields: {
+        project: { key: input.projectKey },
+        summary: input.summary,
+        description: adfDescription,
+        issuetype: { name: 'Task' },
+      },
+    }),
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    getLog().warn(
+      { status: res.status, body: body.slice(0, 200), projectKey: input.projectKey },
+      'jira.create_issue_failed'
+    );
+    throw new Error(`Jira create issue failed: ${String(res.status)}. ${body.slice(0, 300)}`);
+  }
+  const data = (await res.json()) as { id: string; key: string };
+  return {
+    id: data.id,
+    key: data.key,
+    url: `https://${creds.host}/browse/${data.key}`,
+  };
+}
+
 /**
  * Verify creds work. Used by the "Test connection" button in Settings.
  * Throws on failure with a user-readable message; returns the authed user's

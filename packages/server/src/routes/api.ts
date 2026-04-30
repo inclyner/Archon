@@ -83,7 +83,18 @@ import {
   clearJiraCreds,
   verifyJiraCreds,
   getAssignedTickets,
+  listJiraProjects,
+  createJiraIssue,
 } from '@archon/core/jira';
+import {
+  getSlackConfig,
+  getSlackConfigStatus,
+  getDefaultJiraProjectKey,
+  saveSlackConfig,
+  clearSlackConfig,
+  getRecentMessages,
+  verifySlackToken,
+} from '@archon/core/slack-inbox';
 import { listGroupWorktrees, removeGroupWorktree } from '@archon/isolation';
 import {
   jiraConfigStatusSchema,
@@ -91,6 +102,15 @@ import {
   jiraTestResponseSchema,
   jiraTicketsResponseSchema,
 } from './schemas/jira.schemas';
+import {
+  slackConfigStatusSchema,
+  slackConfigInputSchema,
+  slackTestResponseSchema,
+  slackMessagesResponseSchema,
+  jiraProjectsResponseSchema,
+  jiraCreateIssueInputSchema,
+  jiraCreatedIssueSchema,
+} from './schemas/slack.schemas';
 import { errorSchema } from './schemas/common.schemas';
 import { updateCheckResponseSchema } from './schemas/system.schemas';
 import {
@@ -570,6 +590,114 @@ const jiraTicketsRoute = createRoute({
       description: 'Tickets',
     },
     400: jsonError('Jira not configured'),
+    500: jsonError('Server error'),
+  },
+});
+
+const jiraProjectsRoute = createRoute({
+  method: 'get',
+  path: '/api/jira/projects',
+  tags: ['Settings'],
+  summary: 'List Jira projects (for the default-project picker)',
+  responses: {
+    200: {
+      content: { 'application/json': { schema: jiraProjectsResponseSchema } },
+      description: 'Projects',
+    },
+    400: jsonError('Jira not configured'),
+    500: jsonError('Server error'),
+  },
+});
+
+const jiraCreateIssueRoute = createRoute({
+  method: 'post',
+  path: '/api/jira/issues',
+  tags: ['Settings'],
+  summary: 'Create a Jira issue. Project key falls back to slack default if omitted.',
+  request: {
+    body: { content: { 'application/json': { schema: jiraCreateIssueInputSchema } } },
+  },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: jiraCreatedIssueSchema } },
+      description: 'Created',
+    },
+    400: jsonError('Validation / not configured'),
+    500: jsonError('Server error'),
+  },
+});
+
+// ─── Slack inbox (Phase: Slack) ───────────────────────────────────────────────
+const slackConfigGetRoute = createRoute({
+  method: 'get',
+  path: '/api/settings/slack',
+  tags: ['Settings'],
+  summary: 'Slack inbox configuration status (no token returned)',
+  responses: {
+    200: {
+      content: { 'application/json': { schema: slackConfigStatusSchema } },
+      description: 'Status',
+    },
+    500: jsonError('Server error'),
+  },
+});
+
+const slackConfigPutRoute = createRoute({
+  method: 'put',
+  path: '/api/settings/slack',
+  tags: ['Settings'],
+  summary: 'Save Slack inbox config (token, channel ids, default project)',
+  request: {
+    body: { content: { 'application/json': { schema: slackConfigInputSchema } } },
+  },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: slackConfigStatusSchema } },
+      description: 'Saved',
+    },
+    500: jsonError('Server error'),
+  },
+});
+
+const slackConfigDeleteRoute = createRoute({
+  method: 'delete',
+  path: '/api/settings/slack',
+  tags: ['Settings'],
+  summary: 'Clear Slack inbox config',
+  responses: {
+    200: {
+      content: { 'application/json': { schema: successResponseSchema } },
+      description: 'Cleared',
+    },
+    500: jsonError('Server error'),
+  },
+});
+
+const slackTestRoute = createRoute({
+  method: 'post',
+  path: '/api/slack/test',
+  tags: ['Settings'],
+  summary: 'Verify Slack token by calling auth.test',
+  responses: {
+    200: {
+      content: { 'application/json': { schema: slackTestResponseSchema } },
+      description: 'Test result',
+    },
+    500: jsonError('Server error'),
+  },
+});
+
+const slackMessagesRoute = createRoute({
+  method: 'get',
+  path: '/api/slack/messages',
+  tags: ['Settings'],
+  summary: 'Recent messages from configured Slack channels (newest first)',
+  responses: {
+    200: {
+      content: { 'application/json': { schema: slackMessagesResponseSchema } },
+      description: 'Messages',
+    },
+    400: jsonError('Slack not configured / Slack returned an error'),
     500: jsonError('Server error'),
   },
 });
@@ -1977,6 +2105,134 @@ export function registerApiRoutes(
     } catch (error) {
       getLog().error({ err: error }, 'jira_tickets_failed');
       return apiError(c, 500, (error as Error).message);
+    }
+  });
+
+  registerOpenApiRoute(jiraProjectsRoute, async c => {
+    const creds = await getJiraCreds();
+    if (!creds) {
+      return apiError(c, 400, 'Jira not configured.');
+    }
+    try {
+      const projects = await listJiraProjects(creds);
+      return c.json({ projects });
+    } catch (error) {
+      getLog().error({ err: error }, 'jira_projects_failed');
+      return apiError(c, 500, (error as Error).message);
+    }
+  });
+
+  registerOpenApiRoute(jiraCreateIssueRoute, async c => {
+    const body = getValidatedBody(c, jiraCreateIssueInputSchema);
+    const creds = await getJiraCreds();
+    if (!creds) {
+      return apiError(c, 400, 'Jira not configured.');
+    }
+    // Fall back to the default project key the user configured in
+    // Settings → Slack. The body can override per-issue if/when we add a
+    // picker on the create-ticket form (currently single-project per spec).
+    const projectKey = body.projectKey ?? (await getDefaultJiraProjectKey());
+    if (!projectKey) {
+      return apiError(
+        c,
+        400,
+        'No Jira project. Set a default in Settings → Slack or pass projectKey explicitly.'
+      );
+    }
+    try {
+      const issue = await createJiraIssue(creds, {
+        projectKey,
+        summary: body.summary,
+        description: body.description,
+      });
+      return c.json(issue);
+    } catch (error) {
+      getLog().error({ err: error, projectKey }, 'jira_create_issue_failed');
+      return apiError(c, 500, (error as Error).message);
+    }
+  });
+
+  // ─── Slack inbox config + messages ────────────────────────────────────────
+  registerOpenApiRoute(slackConfigGetRoute, async c => {
+    try {
+      return c.json(await getSlackConfigStatus());
+    } catch (error) {
+      getLog().error({ err: error }, 'slack_config_get_failed');
+      return apiError(c, 500, 'Failed to read Slack config');
+    }
+  });
+
+  registerOpenApiRoute(slackConfigPutRoute, async c => {
+    try {
+      const body = getValidatedBody(c, slackConfigInputSchema);
+      // Treat empty/whitespace token as "don't change" — the form sends an
+      // empty string when the user doesn't want to overwrite the saved
+      // (or env-derived) token.
+      const tokenToSave =
+        typeof body.token === 'string' && body.token.trim().length > 0
+          ? body.token.trim()
+          : undefined;
+      await saveSlackConfig({
+        token: tokenToSave,
+        channelIds: body.channelIds,
+        pollIntervalSeconds: body.pollIntervalSeconds,
+        defaultJiraProjectKey: body.defaultJiraProjectKey,
+      });
+      return c.json(await getSlackConfigStatus());
+    } catch (error) {
+      getLog().error({ err: error }, 'slack_config_put_failed');
+      return apiError(c, 500, 'Failed to save Slack config');
+    }
+  });
+
+  registerOpenApiRoute(slackConfigDeleteRoute, async c => {
+    try {
+      await clearSlackConfig();
+      return c.json({ success: true });
+    } catch (error) {
+      getLog().error({ err: error }, 'slack_config_clear_failed');
+      return apiError(c, 500, 'Failed to clear Slack config');
+    }
+  });
+
+  registerOpenApiRoute(slackTestRoute, async c => {
+    const cfg = await getSlackConfig();
+    // For test we only need a token, not channels, so fall back to status if
+    // channels aren't set yet — let the user verify auth before configuring.
+    const status = await getSlackConfigStatus();
+    if (!status.hasToken) {
+      return c.json({ ok: false, error: 'No Slack token configured.' });
+    }
+    try {
+      // Reach into either source the same way getSlackConfig does.
+      const token = cfg?.token ?? process.env.SLACK_BOT_TOKEN?.trim();
+      if (!token) {
+        return c.json({ ok: false, error: 'Token resolution returned empty.' });
+      }
+      const r = await verifySlackToken(token);
+      return c.json({ ok: true, teamName: r.teamName, botName: r.botName });
+    } catch (e) {
+      return c.json({ ok: false, error: (e as Error).message });
+    }
+  });
+
+  registerOpenApiRoute(slackMessagesRoute, async c => {
+    const cfg = await getSlackConfig();
+    if (!cfg) {
+      return apiError(
+        c,
+        400,
+        'Slack not configured. Set token + at least one channel id in Settings → Slack.'
+      );
+    }
+    try {
+      const messages = await getRecentMessages(cfg);
+      return c.json({ messages });
+    } catch (error) {
+      // 400 instead of 500 so the UI shows the actionable message body
+      // (e.g. "Invite the bot to that channel: /invite @<bot>").
+      getLog().warn({ err: error }, 'slack_messages_failed');
+      return apiError(c, 400, (error as Error).message);
     }
   });
 

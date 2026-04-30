@@ -5,7 +5,11 @@ export {
   clearJiraCreds,
   getAssignedTickets,
   verifyJiraCreds,
+  listJiraProjects,
+  createJiraIssue,
   type JiraCreds,
   type JiraConfigStatus,
   type JiraTicket,
+  type JiraProjectSummary,
+  type JiraCreatedIssue,
 } from './client';
