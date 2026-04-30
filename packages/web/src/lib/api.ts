@@ -112,9 +112,13 @@ export async function listProviders(): Promise<ProviderInfo[]> {
 }
 
 // Conversations
-export async function listConversations(codebaseId?: string): Promise<ConversationResponse[]> {
+export async function listConversations(
+  codebaseId?: string,
+  workspaceGroupId?: string
+): Promise<ConversationResponse[]> {
   const params = new URLSearchParams();
   if (codebaseId) params.set('codebaseId', codebaseId);
+  if (workspaceGroupId) params.set('workspaceGroupId', workspaceGroupId);
   const qs = params.toString();
   return fetchJSON<ConversationResponse[]>(`/api/conversations${qs ? `?${qs}` : ''}`);
 }

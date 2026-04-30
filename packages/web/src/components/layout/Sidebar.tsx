@@ -15,16 +15,12 @@ import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '@/component
 import { SearchBar } from '@/components/sidebar/SearchBar';
 import { ProjectSelector } from '@/components/sidebar/ProjectSelector';
 import { ProjectDetail } from '@/components/sidebar/ProjectDetail';
+import { GroupDetail } from '@/components/sidebar/GroupDetail';
 import { AllConversationsView } from '@/components/sidebar/AllConversationsView';
 import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 import { useProject } from '@/contexts/ProjectContext';
-import {
-  addCodebase,
-  getCodebaseInput,
-  listWorkspaceGroups,
-  createConversation,
-  type WorkspaceGroupResponse,
-} from '@/lib/api';
+import { addCodebase, getCodebaseInput, listWorkspaceGroups } from '@/lib/api';
+import { cn } from '@/lib/utils';
 
 const SIDEBAR_MIN = 240;
 const SIDEBAR_MAX = 400;
@@ -55,10 +51,13 @@ export function Sidebar(): React.ReactElement {
   const {
     selectedProjectId,
     setSelectedProjectId,
+    selectedGroupId,
     codebases,
     isLoadingCodebases,
     isErrorCodebases,
   } = useProject();
+  // setSelectedGroupId is consumed inside WorkspaceGroupsSection via useProject() —
+  // not destructured here to keep the top-level scope tight.
 
   const selectedProject = codebases?.find(cb => cb.id === selectedProjectId) ?? null;
 
@@ -310,8 +309,15 @@ export function Sidebar(): React.ReactElement {
 
       <Separator className="bg-border" />
 
-      {/* Project-scoped or all-conversations content */}
-      {selectedProjectId ? (
+      {/* Detail pane priority: group > project > all. Mutual exclusion is
+          enforced in ProjectContext setters so at most one is active. */}
+      {selectedGroupId ? (
+        <div className="min-w-0 flex-1 overflow-hidden">
+          <ScrollArea className="h-full px-2 py-2">
+            <GroupDetail groupId={selectedGroupId} searchQuery={searchQuery} />
+          </ScrollArea>
+        </div>
+      ) : selectedProjectId ? (
         <div className="min-w-0 flex-1 overflow-hidden">
           <ScrollArea className="h-full px-2 py-2">
             <ProjectDetail
@@ -340,38 +346,20 @@ export function Sidebar(): React.ReactElement {
 }
 
 /**
- * Lists registered workspace groups in the sidebar. Click → spawns a fresh
- * conversation tagged with that group's id, then navigates to the chat. The
- * orchestrator + group-chat helper materializes the per-conversation
- * worktree lazily on the first message.
- *
- * Standalone component (not inlined into Sidebar) so the useQuery + useMutation
- * hooks live alongside the JSX they drive.
+ * Lists registered workspace groups in the sidebar. Click → SELECTS the
+ * group as the active sidebar scope (mirrors how Projects work). The
+ * GroupDetail pane below then shows the group's conversations + a "New
+ * Chat" button. This replaces the earlier "click to create a new chat
+ * directly" behavior, which made it impossible to see existing group
+ * conversations at a glance.
  */
 function WorkspaceGroupsSection(): React.ReactElement {
-  const navigate = useNavigate();
+  const { selectedGroupId, setSelectedGroupId } = useProject();
   const { data: groups, isLoading } = useQuery({
     queryKey: ['workspace-groups'],
     queryFn: listWorkspaceGroups,
     staleTime: 30_000,
   });
-  const [busyGroupId, setBusyGroupId] = useState<string | null>(null);
-
-  async function startGroupChat(group: WorkspaceGroupResponse): Promise<void> {
-    if (busyGroupId) return;
-    setBusyGroupId(group.id);
-    try {
-      const created = await createConversation(undefined, undefined, group.id);
-      navigate(`/chat/${encodeURIComponent(created.conversationId)}`);
-    } catch (e) {
-      // Surface to console; toast plumbing for the sidebar is a follow-up.
-      // The Groups page has full error UI, so this is a nudge to head there.
-
-      console.error('Failed to start group chat', e);
-    } finally {
-      setBusyGroupId(null);
-    }
-  }
 
   return (
     <div className="px-2 py-2">
@@ -400,25 +388,32 @@ function WorkspaceGroupsSection(): React.ReactElement {
           No groups yet — register one →
         </Link>
       )}
-      {groups?.map(group => (
-        <button
-          key={group.id}
-          onClick={(): void => {
-            void startGroupChat(group);
-          }}
-          disabled={busyGroupId !== null}
-          className="mt-1 flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm text-text-secondary hover:bg-surface-elevated hover:text-text-primary transition-colors disabled:opacity-50"
-          title={`New chat across all members of ${group.name}`}
-        >
-          {busyGroupId === group.id ? (
-            <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-primary" />
-          ) : (
-            <FolderTree className="h-3.5 w-3.5 shrink-0 text-primary" />
-          )}
-          <span className="truncate flex-1">{group.name}</span>
-          <MessageSquarePlus className="h-3 w-3 shrink-0 text-text-tertiary" />
-        </button>
-      ))}
+      {groups?.map(group => {
+        const isSelected = selectedGroupId === group.id;
+        return (
+          <button
+            key={group.id}
+            onClick={(): void => {
+              setSelectedGroupId(isSelected ? null : group.id);
+            }}
+            className={cn(
+              'mt-1 flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-sm transition-colors',
+              isSelected
+                ? 'bg-primary/10 text-primary'
+                : 'text-text-secondary hover:bg-surface-elevated hover:text-text-primary'
+            )}
+            title={`Show conversations for ${group.name}`}
+          >
+            <FolderTree
+              className={cn(
+                'h-3.5 w-3.5 shrink-0',
+                isSelected ? 'text-primary' : 'text-primary/70'
+              )}
+            />
+            <span className="truncate flex-1">{group.name}</span>
+          </button>
+        );
+      })}
     </div>
   );
 }
