@@ -402,6 +402,45 @@ export interface JiraProjectSummary {
   name: string;
 }
 
+export interface AdfNode {
+  type: string;
+  text?: string;
+  attrs?: Record<string, unknown>;
+  marks?: { type: string; attrs?: Record<string, unknown> }[];
+  content?: AdfNode[];
+}
+
+export interface JiraIssueDetail {
+  key: string;
+  summary: string;
+  status: string;
+  statusCategory: 'todo' | 'inprogress' | 'done' | 'unknown';
+  url: string;
+  projectKey: string;
+  issueType: string;
+  priority: string | null;
+  reporter: { name: string; accountId: string } | null;
+  assignee: { name: string; accountId: string } | null;
+  labels: string[];
+  created: string;
+  updated: string;
+  description: AdfNode | null;
+}
+
+export interface JiraCommentResponse {
+  id: string;
+  author: { name: string; accountId: string } | null;
+  body: AdfNode | null;
+  created: string;
+  updated: string;
+}
+
+export async function getJiraIssueDetail(
+  key: string
+): Promise<{ issue: JiraIssueDetail; comments: JiraCommentResponse[] }> {
+  return fetchJSON(`/api/jira/issues/${encodeURIComponent(key)}`);
+}
+
 export async function listJiraProjects(): Promise<{ projects: JiraProjectSummary[] }> {
   return fetchJSON<{ projects: JiraProjectSummary[] }>('/api/jira/projects');
 }

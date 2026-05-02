@@ -285,6 +285,150 @@ export async function createJiraIssue(
 }
 
 /**
+ * Atlassian Document Format (ADF) — the JSON tree Atlassian uses for rich
+ * text. We pass it through to the UI which has its own renderer; here we
+ * just need the type alias so the API surface is honest.
+ */
+export interface AdfNode {
+  type: string;
+  text?: string;
+  attrs?: Record<string, unknown>;
+  marks?: { type: string; attrs?: Record<string, unknown> }[];
+  content?: AdfNode[];
+}
+
+export interface JiraIssueDetail {
+  key: string;
+  summary: string;
+  status: string;
+  statusCategory: 'todo' | 'inprogress' | 'done' | 'unknown';
+  url: string;
+  projectKey: string;
+  issueType: string;
+  priority: string | null;
+  reporter: { name: string; accountId: string } | null;
+  assignee: { name: string; accountId: string } | null;
+  labels: string[];
+  created: string;
+  updated: string;
+  /** ADF tree (or null if the ticket has no description). */
+  description: AdfNode | null;
+}
+
+export interface JiraComment {
+  id: string;
+  author: { name: string; accountId: string } | null;
+  body: AdfNode | null;
+  created: string;
+  updated: string;
+}
+
+interface JiraIssueResponse {
+  key: string;
+  fields: {
+    summary: string;
+    description: AdfNode | null;
+    status: { name: string; statusCategory: { key: string } };
+    project: { key: string };
+    issuetype: { name: string };
+    priority: { name: string } | null;
+    reporter: { displayName: string; accountId: string } | null;
+    assignee: { displayName: string; accountId: string } | null;
+    labels: string[];
+    created: string;
+    updated: string;
+  };
+}
+
+interface JiraCommentsResponse {
+  comments: {
+    id: string;
+    author: { displayName: string; accountId: string } | null;
+    body: AdfNode | null;
+    created: string;
+    updated: string;
+  }[];
+}
+
+/**
+ * Fetch a single issue with its full description + comments. Two API calls
+ * because Jira's `expand=renderedFields` returns HTML which is uglier to
+ * render than walking ADF ourselves; comments are a separate endpoint
+ * regardless.
+ */
+export async function getJiraIssueDetail(
+  creds: JiraCreds,
+  key: string
+): Promise<{ issue: JiraIssueDetail; comments: JiraComment[] }> {
+  const issueUrl = new URL(`https://${creds.host}/rest/api/3/issue/${encodeURIComponent(key)}`);
+  issueUrl.searchParams.set(
+    'fields',
+    'summary,description,status,project,issuetype,priority,reporter,assignee,labels,created,updated'
+  );
+  const [issueRes, commentsRes] = await Promise.all([
+    fetch(issueUrl, {
+      headers: { Authorization: authHeader(creds), Accept: 'application/json' },
+    }),
+    fetch(`https://${creds.host}/rest/api/3/issue/${encodeURIComponent(key)}/comment`, {
+      headers: { Authorization: authHeader(creds), Accept: 'application/json' },
+    }),
+  ]);
+
+  if (!issueRes.ok) {
+    const body = await issueRes.text();
+    throw new Error(
+      `Jira fetch issue ${key} failed: ${String(issueRes.status)}. ${
+        issueRes.status === 404 ? 'Ticket not found or no permission to view.' : body.slice(0, 200)
+      }`
+    );
+  }
+  const issueData = (await issueRes.json()) as JiraIssueResponse;
+  const issue: JiraIssueDetail = {
+    key: issueData.key,
+    summary: issueData.fields.summary,
+    status: issueData.fields.status.name,
+    statusCategory: mapStatusCategory(issueData.fields.status.statusCategory.key),
+    url: `https://${creds.host}/browse/${issueData.key}`,
+    projectKey: issueData.fields.project.key,
+    issueType: issueData.fields.issuetype.name,
+    priority: issueData.fields.priority?.name ?? null,
+    reporter: issueData.fields.reporter
+      ? {
+          name: issueData.fields.reporter.displayName,
+          accountId: issueData.fields.reporter.accountId,
+        }
+      : null,
+    assignee: issueData.fields.assignee
+      ? {
+          name: issueData.fields.assignee.displayName,
+          accountId: issueData.fields.assignee.accountId,
+        }
+      : null,
+    labels: issueData.fields.labels,
+    created: issueData.fields.created,
+    updated: issueData.fields.updated,
+    description: issueData.fields.description,
+  };
+
+  // Comments are non-fatal — the issue itself is the main payload.
+  let comments: JiraComment[] = [];
+  if (commentsRes.ok) {
+    const cd = (await commentsRes.json()) as JiraCommentsResponse;
+    comments = cd.comments.map(c => ({
+      id: c.id,
+      author: c.author ? { name: c.author.displayName, accountId: c.author.accountId } : null,
+      body: c.body,
+      created: c.created,
+      updated: c.updated,
+    }));
+  } else {
+    getLog().warn({ key, status: commentsRes.status }, 'jira.comments_fetch_failed');
+  }
+
+  return { issue, comments };
+}
+
+/**
  * Verify creds work. Used by the "Test connection" button in Settings.
  * Throws on failure with a user-readable message; returns the authed user's
  * displayName on success.

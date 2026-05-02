@@ -269,15 +269,18 @@ function TicketRow(props: {
   return (
     <div className="flex items-center gap-3 rounded-md border border-border bg-surface px-3 py-2">
       <span className={`inline-block h-2 w-2 shrink-0 rounded-full ${dotClass}`} />
-      <a
-        href={ticket.url}
-        target="_blank"
-        rel="noopener noreferrer"
+      <Link
+        to={`/jira/${encodeURIComponent(ticket.key)}`}
         className="text-xs font-mono text-primary hover:underline"
       >
         {ticket.key}
-      </a>
-      <span className="min-w-0 flex-1 truncate text-sm text-text-primary">{ticket.summary}</span>
+      </Link>
+      <Link
+        to={`/jira/${encodeURIComponent(ticket.key)}`}
+        className="min-w-0 flex-1 truncate text-sm text-text-primary hover:underline"
+      >
+        {ticket.summary}
+      </Link>
       <span className="shrink-0 text-[11px] text-text-tertiary">{ticket.status}</span>
       <a
         href={ticket.url}

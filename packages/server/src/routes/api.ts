@@ -85,6 +85,7 @@ import {
   getAssignedTickets,
   listJiraProjects,
   createJiraIssue,
+  getJiraIssueDetail,
 } from '@archon/core/jira';
 import {
   getSlackConfig,
@@ -101,6 +102,7 @@ import {
   jiraConfigInputSchema,
   jiraTestResponseSchema,
   jiraTicketsResponseSchema,
+  jiraIssueDetailResponseSchema,
 } from './schemas/jira.schemas';
 import {
   slackConfigStatusSchema,
@@ -575,6 +577,23 @@ const jiraTestRoute = createRoute({
       content: { 'application/json': { schema: jiraTestResponseSchema } },
       description: 'Test result',
     },
+    500: jsonError('Server error'),
+  },
+});
+
+const jiraIssueDetailRoute = createRoute({
+  method: 'get',
+  path: '/api/jira/issues/{key}',
+  tags: ['Settings'],
+  summary: 'Get a single Jira issue with description + comments',
+  request: { params: z.object({ key: z.string() }) },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: jiraIssueDetailResponseSchema } },
+      description: 'Issue + comments',
+    },
+    400: jsonError('Jira not configured'),
+    404: jsonError('Not found'),
     500: jsonError('Server error'),
   },
 });
@@ -2105,6 +2124,23 @@ export function registerApiRoutes(
     } catch (error) {
       getLog().error({ err: error }, 'jira_tickets_failed');
       return apiError(c, 500, (error as Error).message);
+    }
+  });
+
+  registerOpenApiRoute(jiraIssueDetailRoute, async c => {
+    const key = c.req.param('key') ?? '';
+    const creds = await getJiraCreds();
+    if (!creds) return apiError(c, 400, 'Jira not configured.');
+    try {
+      const detail = await getJiraIssueDetail(creds, key);
+      return c.json(detail);
+    } catch (error) {
+      const msg = (error as Error).message;
+      if (msg.includes('404') || msg.includes('not found')) {
+        return apiError(c, 404, msg);
+      }
+      getLog().error({ err: error, key }, 'jira_issue_detail_failed');
+      return apiError(c, 500, msg);
     }
   });
 

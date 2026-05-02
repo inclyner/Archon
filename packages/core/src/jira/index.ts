@@ -7,9 +7,13 @@ export {
   verifyJiraCreds,
   listJiraProjects,
   createJiraIssue,
+  getJiraIssueDetail,
   type JiraCreds,
   type JiraConfigStatus,
   type JiraTicket,
   type JiraProjectSummary,
   type JiraCreatedIssue,
+  type JiraIssueDetail,
+  type JiraComment,
+  type AdfNode,
 } from './client';
