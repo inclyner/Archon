@@ -219,6 +219,40 @@ export function buildJiraChatSeed(issue: JiraIssueDetail, comments: JiraCommentR
   return lines.join('\n').trim();
 }
 
+// ─── seed handoff (Jira/Slack page → /chat/<id>) ────────────────────────────
+//
+// React Router's `navigate(path, { state })` is supposed to pass arbitrary
+// data across navigations, but in this app it landed empty by the time
+// ChatInterface mounted (likely a remount-on-key-change race). sessionStorage
+// is bulletproof: write before navigate, read on mount, delete after.
+//
+// Keyed by conversationId so:
+//   - Back/forward to the same conversation doesn't re-seed (correct: the
+//     user has already started typing).
+//   - Multiple seeded chats in the same tab don't collide.
+//   - New tab gets its own sessionStorage and doesn't re-seed stale stuff.
+
+const SEED_KEY_PREFIX = 'archon-chat-seed:';
+
+export function stashChatSeed(conversationId: string, seed: string): void {
+  try {
+    sessionStorage.setItem(SEED_KEY_PREFIX + conversationId, seed);
+  } catch {
+    // sessionStorage unavailable (private browsing) — caller falls back
+    // to whatever it was doing before. Not fatal, just less ergonomic.
+  }
+}
+
+export function consumeChatSeed(conversationId: string): string | null {
+  try {
+    const v = sessionStorage.getItem(SEED_KEY_PREFIX + conversationId);
+    if (v != null) sessionStorage.removeItem(SEED_KEY_PREFIX + conversationId);
+    return v;
+  } catch {
+    return null;
+  }
+}
+
 // ─── helpers ────────────────────────────────────────────────────────────────
 
 function attrString(

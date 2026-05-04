@@ -23,7 +23,7 @@ import {
   type JiraTicket,
   type WorkspaceGroupResponse,
 } from '@/lib/api';
-import { buildJiraChatSeed } from '@/lib/jira-context';
+import { buildJiraChatSeed, stashChatSeed } from '@/lib/jira-context';
 
 const GROUP_PREF_KEY = 'archon-jira-default-group';
 
@@ -73,21 +73,20 @@ export function JiraPage(): React.ReactElement {
   }, [groupsQuery.data, selectedGroupId]);
 
   const startChat = useMutation({
-    mutationFn: async (
-      ticket: JiraTicket
-    ): Promise<{ conversationId: string; seedMessage: string }> => {
-      // Fetch the full ticket so the seed has description + comments +
-      // metadata. ~one round-trip on click; acceptable since the user is
-      // about to wait on the LLM anyway.
+    mutationFn: async (ticket: JiraTicket): Promise<string> => {
+      // Fetch the full ticket (description + comments + metadata).
+      // Stash the seed in sessionStorage keyed by conversationId; the
+      // chat page reads + clears it on mount, leaving the input pre-
+      // filled for the user to edit before hitting Enter. The
+      // orchestrator stays idle until the user sends.
       const detail = await getJiraIssueDetail(ticket.key);
       const seedMessage = buildJiraChatSeed(detail.issue, detail.comments);
-      // Don't auto-dispatch — the chat page reads `state.seedMessage` and
-      // pre-fills the input, letting the user edit before sending.
       const created = await createConversation(undefined, undefined, selectedGroupId || undefined);
-      return { conversationId: created.conversationId, seedMessage };
+      stashChatSeed(created.conversationId, seedMessage);
+      return created.conversationId;
     },
-    onSuccess: ({ conversationId, seedMessage }) => {
-      navigate(`/chat/${encodeURIComponent(conversationId)}`, { state: { seedMessage } });
+    onSuccess: conversationId => {
+      navigate(`/chat/${encodeURIComponent(conversationId)}`);
     },
   });
 

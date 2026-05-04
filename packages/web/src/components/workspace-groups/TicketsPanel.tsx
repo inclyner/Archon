@@ -19,7 +19,7 @@ import {
   getJiraIssueDetail,
   type JiraTicket,
 } from '@/lib/api';
-import { buildJiraChatSeed } from '@/lib/jira-context';
+import { buildJiraChatSeed, stashChatSeed } from '@/lib/jira-context';
 
 interface Props {
   groupId: string;
@@ -43,19 +43,15 @@ export function TicketsPanel({ groupId, groupName }: Props): React.ReactElement 
   });
 
   const startChat = useMutation({
-    mutationFn: async (
-      ticket: JiraTicket
-    ): Promise<{ conversationId: string; seedMessage: string }> => {
-      // Fetch full ticket detail so the seed has description + comments
-      // + metadata. Don't auto-dispatch — the chat input is pre-filled
-      // via router state so the user can edit before the LLM fires.
+    mutationFn: async (ticket: JiraTicket): Promise<string> => {
       const detail = await getJiraIssueDetail(ticket.key);
       const seedMessage = buildJiraChatSeed(detail.issue, detail.comments);
       const created = await createConversation(undefined, undefined, groupId);
-      return { conversationId: created.conversationId, seedMessage };
+      stashChatSeed(created.conversationId, seedMessage);
+      return created.conversationId;
     },
-    onSuccess: ({ conversationId, seedMessage }) => {
-      navigate(`/chat/${encodeURIComponent(conversationId)}`, { state: { seedMessage } });
+    onSuccess: conversationId => {
+      navigate(`/chat/${encodeURIComponent(conversationId)}`);
     },
   });
 
