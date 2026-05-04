@@ -113,6 +113,14 @@ interface MessageInputProps {
 
 export interface MessageInputHandle {
   focus: () => void;
+  /**
+   * Set the textarea's value imperatively. Used by the chat page when a
+   * caller (e.g. "Start chat" on a Jira ticket) wants to seed the input
+   * with rich pre-built context that the user can edit before sending.
+   * The cursor is moved to the end so additional context is appended,
+   * not overwriting the seed.
+   */
+  setValue: (next: string) => void;
 }
 
 function formatBytes(bytes: number): string {
@@ -135,6 +143,18 @@ const messageInput = forwardRef<MessageInputHandle, MessageInputProps>(function 
   useImperativeHandle(ref, () => ({
     focus: (): void => {
       textareaRef.current?.focus();
+    },
+    setValue: (next: string): void => {
+      setValue(next);
+      // Defer to next tick so the textarea has the new value before we
+      // move the caret. Otherwise the cursor lands at position 0.
+      requestAnimationFrame(() => {
+        const el = textareaRef.current;
+        if (el) {
+          el.focus();
+          el.selectionStart = el.selectionEnd = next.length;
+        }
+      });
     },
   }));
 

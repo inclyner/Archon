@@ -12,7 +12,14 @@ import { useNavigate } from 'react-router';
 import { Loader2, ExternalLink, MessageSquarePlus, RefreshCw } from 'lucide-react';
 import { Link } from 'react-router';
 import { Button } from '@/components/ui/button';
-import { listJiraTickets, createConversation, getJiraConfig, type JiraTicket } from '@/lib/api';
+import {
+  listJiraTickets,
+  createConversation,
+  getJiraConfig,
+  getJiraIssueDetail,
+  type JiraTicket,
+} from '@/lib/api';
+import { buildJiraChatSeed } from '@/lib/jira-context';
 
 interface Props {
   groupId: string;
@@ -36,16 +43,19 @@ export function TicketsPanel({ groupId, groupName }: Props): React.ReactElement 
   });
 
   const startChat = useMutation({
-    mutationFn: async (ticket: JiraTicket): Promise<string> => {
-      // Pre-title the conversation with the ticket key + truncated summary.
-      // The orchestrator's title generator can rewrite this if/when the AI
-      // gives a better one; ours is a sensible placeholder.
-      const message = `Working on ${ticket.key}: ${ticket.summary}\n\nTicket: ${ticket.url}`;
-      const created = await createConversation(undefined, message, groupId);
-      return created.conversationId;
+    mutationFn: async (
+      ticket: JiraTicket
+    ): Promise<{ conversationId: string; seedMessage: string }> => {
+      // Fetch full ticket detail so the seed has description + comments
+      // + metadata. Don't auto-dispatch — the chat input is pre-filled
+      // via router state so the user can edit before the LLM fires.
+      const detail = await getJiraIssueDetail(ticket.key);
+      const seedMessage = buildJiraChatSeed(detail.issue, detail.comments);
+      const created = await createConversation(undefined, undefined, groupId);
+      return { conversationId: created.conversationId, seedMessage };
     },
-    onSuccess: conversationId => {
-      navigate(`/chat/${encodeURIComponent(conversationId)}`);
+    onSuccess: ({ conversationId, seedMessage }) => {
+      navigate(`/chat/${encodeURIComponent(conversationId)}`, { state: { seedMessage } });
     },
   });
 

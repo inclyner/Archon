@@ -19,9 +19,11 @@ import {
   createConversation,
   getJiraConfig,
   listWorkspaceGroups,
+  getJiraIssueDetail,
   type JiraTicket,
   type WorkspaceGroupResponse,
 } from '@/lib/api';
+import { buildJiraChatSeed } from '@/lib/jira-context';
 
 const GROUP_PREF_KEY = 'archon-jira-default-group';
 
@@ -71,16 +73,21 @@ export function JiraPage(): React.ReactElement {
   }, [groupsQuery.data, selectedGroupId]);
 
   const startChat = useMutation({
-    mutationFn: async (ticket: JiraTicket): Promise<string> => {
-      const message = `Working on ${ticket.key}: ${ticket.summary}\n\nTicket: ${ticket.url}`;
-      // selectedGroupId may be "" (no group chosen) — that creates a plain
-      // orchestrator conversation, which is still useful for ticket research
-      // even without group worktree isolation.
-      const created = await createConversation(undefined, message, selectedGroupId || undefined);
-      return created.conversationId;
+    mutationFn: async (
+      ticket: JiraTicket
+    ): Promise<{ conversationId: string; seedMessage: string }> => {
+      // Fetch the full ticket so the seed has description + comments +
+      // metadata. ~one round-trip on click; acceptable since the user is
+      // about to wait on the LLM anyway.
+      const detail = await getJiraIssueDetail(ticket.key);
+      const seedMessage = buildJiraChatSeed(detail.issue, detail.comments);
+      // Don't auto-dispatch — the chat page reads `state.seedMessage` and
+      // pre-fills the input, letting the user edit before sending.
+      const created = await createConversation(undefined, undefined, selectedGroupId || undefined);
+      return { conversationId: created.conversationId, seedMessage };
     },
-    onSuccess: conversationId => {
-      navigate(`/chat/${encodeURIComponent(conversationId)}`);
+    onSuccess: ({ conversationId, seedMessage }) => {
+      navigate(`/chat/${encodeURIComponent(conversationId)}`, { state: { seedMessage } });
     },
   });
 

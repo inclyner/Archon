@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useNavigate } from 'react-router';
+import { useNavigate, useLocation } from 'react-router';
 import { Header } from '@/components/layout/Header';
 import { MessageList } from './MessageList';
 import { MessageInput, type MessageInputHandle } from './MessageInput';
@@ -117,6 +117,31 @@ export function ChatInterface({ conversationId }: ChatInterfaceProps): React.Rea
   const inputRef = useRef<MessageInputHandle>(null);
   const messageIdCounter = useRef(0);
   const conversationIdRef = useRef(conversationId);
+
+  // When a caller navigates here with a `seedMessage` in router state,
+  // pre-fill the input so the user can edit it before sending. This is
+  // how "Start chat" on a Jira ticket / Slack message hands off rich
+  // context — the LLM doesn't see the seed until the user hits Enter,
+  // so the user can append "and also check X" before the AI fires.
+  const seedAppliedRef = useRef(false);
+  const location = useLocation();
+  useEffect(() => {
+    if (seedAppliedRef.current) return;
+    const state = location.state as { seedMessage?: string } | null;
+    const seed = state?.seedMessage;
+    if (typeof seed === 'string' && seed.length > 0) {
+      seedAppliedRef.current = true;
+      // Defer to give MessageInput time to mount + bind its handle.
+      const tid = setTimeout(() => {
+        inputRef.current?.setValue(seed);
+      }, 50);
+      return (): void => {
+        clearTimeout(tid);
+      };
+    }
+    return undefined;
+  }, [location.state]);
+
   const messagesRef = useRef(messages);
   useEffect(() => {
     conversationIdRef.current = conversationId;

@@ -14,6 +14,7 @@ import { Header } from '@/components/layout/Header';
 import { Button } from '@/components/ui/button';
 import { AdfRenderer } from '@/components/jira/AdfRenderer';
 import { getJiraIssueDetail, createConversation, listWorkspaceGroups } from '@/lib/api';
+import { buildJiraChatSeed } from '@/lib/jira-context';
 
 const GROUP_PREF_KEY = 'archon-jira-default-group';
 
@@ -50,15 +51,20 @@ export function JiraIssuePage(): React.ReactElement {
   }, [groupsQuery.data, selectedGroupId]);
 
   const startChat = useMutation({
-    mutationFn: async (): Promise<string> => {
-      const issue = detailQuery.data?.issue;
-      if (!issue) throw new Error('Issue not loaded yet');
-      const message = `Working on ${issue.key}: ${issue.summary}\n\nTicket: ${issue.url}`;
-      const created = await createConversation(undefined, message, selectedGroupId || undefined);
-      return created.conversationId;
+    mutationFn: async (): Promise<{ conversationId: string; seedMessage: string }> => {
+      const detail = detailQuery.data;
+      if (!detail) throw new Error('Issue not loaded yet');
+      // Don't auto-dispatch — pass the seed via router state so the chat
+      // input is pre-filled and the user can append context (or trim
+      // noise) before hitting Enter. createConversation without `message`
+      // creates an empty conversation that won't fire the LLM until the
+      // first user message lands.
+      const created = await createConversation(undefined, undefined, selectedGroupId || undefined);
+      const seedMessage = buildJiraChatSeed(detail.issue, detail.comments);
+      return { conversationId: created.conversationId, seedMessage };
     },
-    onSuccess: conversationId => {
-      navigate(`/chat/${encodeURIComponent(conversationId)}`);
+    onSuccess: ({ conversationId, seedMessage }) => {
+      navigate(`/chat/${encodeURIComponent(conversationId)}`, { state: { seedMessage } });
     },
   });
 
