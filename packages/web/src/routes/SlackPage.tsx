@@ -18,6 +18,7 @@ import {
   Loader2,
   ExternalLink,
   MessageSquarePlus,
+  MessageCircle,
   ChevronDown,
   ChevronRight,
   AlertCircle,
@@ -29,6 +30,7 @@ import { Input } from '@/components/ui/input';
 import {
   getSlackConfig,
   listSlackMessages,
+  listSlackThreadReplies,
   createJiraIssue,
   type SlackMessage,
   type JiraCreatedIssue,
@@ -188,8 +190,83 @@ function MessageCard({
   onCreated,
   defaultProjectKey,
 }: MessageCardProps): React.ReactElement {
+  const [threadOpen, setThreadOpen] = useState(false);
+  const hasThread = message.replyCount > 0;
+  const threadQuery = useQuery({
+    queryKey: ['slack-thread', message.channelId, message.threadTs ?? message.ts],
+    queryFn: () => listSlackThreadReplies(message.channelId, message.threadTs ?? message.ts),
+    enabled: hasThread && threadOpen,
+    staleTime: 30_000,
+  });
+
   return (
     <div className="rounded-md border border-border bg-surface p-3">
+      <MessageBody message={message} />
+
+      {createdIssue ? (
+        <div className="mt-2 rounded-md border border-success/40 bg-success/5 px-3 py-2 text-xs">
+          Filed as{' '}
+          <a
+            href={createdIssue.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="font-mono text-primary hover:underline"
+          >
+            {createdIssue.key}
+          </a>
+        </div>
+      ) : (
+        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+          <button
+            onClick={(): void => {
+              onExpandChange(!expanded);
+            }}
+            className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-text-secondary hover:bg-surface-elevated hover:text-text-primary transition-colors"
+          >
+            {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+            <MessageSquarePlus className="h-3 w-3" />
+            Make Jira ticket
+          </button>
+
+          {hasThread && (
+            <button
+              onClick={(): void => {
+                setThreadOpen(prev => !prev);
+              }}
+              className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-text-secondary hover:bg-surface-elevated hover:text-text-primary transition-colors"
+              title="Show thread replies"
+            >
+              {threadOpen ? (
+                <ChevronDown className="h-3 w-3" />
+              ) : (
+                <ChevronRight className="h-3 w-3" />
+              )}
+              <MessageCircle className="h-3 w-3" />
+              {message.replyCount} {message.replyCount === 1 ? 'reply' : 'replies'}
+            </button>
+          )}
+        </div>
+      )}
+
+      {expanded && !createdIssue && (
+        <CreateTicketForm
+          message={message}
+          defaultProjectKey={defaultProjectKey}
+          onCreated={onCreated}
+          onCancel={(): void => {
+            onExpandChange(false);
+          }}
+        />
+      )}
+
+      {hasThread && threadOpen && <ThreadReplies query={threadQuery} />}
+    </div>
+  );
+}
+
+function MessageBody({ message }: { message: SlackMessage }): React.ReactElement {
+  return (
+    <>
       <div className="flex items-baseline gap-2 text-xs">
         <span className="font-semibold text-text-primary">{message.userDisplay}</span>
         <span className="text-text-tertiary">in #{message.channelName}</span>
@@ -207,42 +284,35 @@ function MessageCard({
       <div className="mt-1.5 whitespace-pre-wrap break-words text-sm text-text-primary">
         {message.text}
       </div>
+    </>
+  );
+}
 
-      {createdIssue ? (
-        <div className="mt-2 rounded-md border border-success/40 bg-success/5 px-3 py-2 text-xs">
-          Filed as{' '}
-          <a
-            href={createdIssue.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="font-mono text-primary hover:underline"
-          >
-            {createdIssue.key}
-          </a>
+/**
+ * Replies render indented under the parent with a vertical bar on the left
+ * for visual nesting. Sorted oldest-first server-side, matching Slack's
+ * native UI.
+ */
+function ThreadReplies(props: {
+  query: ReturnType<typeof useQuery<{ messages: SlackMessage[] }, Error>>;
+}): React.ReactElement {
+  const { query } = props;
+  const replies = query.data?.messages ?? [];
+  return (
+    <div className="mt-2 ml-2 border-l-2 border-border pl-3">
+      {query.isLoading && (
+        <div className="flex items-center gap-2 py-1 text-xs text-text-tertiary">
+          <Loader2 className="h-3 w-3 animate-spin" /> Loading replies...
         </div>
-      ) : (
-        <div className="mt-2">
-          <button
-            onClick={(): void => {
-              onExpandChange(!expanded);
-            }}
-            className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-text-secondary hover:bg-surface-elevated hover:text-text-primary transition-colors"
-          >
-            {expanded ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-            <MessageSquarePlus className="h-3 w-3" />
-            Make Jira ticket
-          </button>
-
-          {expanded && (
-            <CreateTicketForm
-              message={message}
-              defaultProjectKey={defaultProjectKey}
-              onCreated={onCreated}
-              onCancel={(): void => {
-                onExpandChange(false);
-              }}
-            />
-          )}
+      )}
+      {query.isError && <div className="text-xs text-error">{query.error.message}</div>}
+      {replies.length > 0 && (
+        <div className="flex flex-col gap-2">
+          {replies.map(r => (
+            <div key={r.id} className="rounded-md border border-border bg-surface px-2.5 py-1.5">
+              <MessageBody message={r} />
+            </div>
+          ))}
         </div>
       )}
     </div>

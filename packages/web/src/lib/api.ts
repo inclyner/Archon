@@ -360,6 +360,9 @@ export interface SlackMessage {
   userDisplay: string;
   text: string;
   permalink: string;
+  threadTs: string | null;
+  replyCount: number;
+  latestReply: string | null;
 }
 
 export async function getSlackConfig(): Promise<SlackConfigStatus> {
@@ -394,6 +397,14 @@ export async function testSlackConnection(): Promise<{
 
 export async function listSlackMessages(): Promise<{ messages: SlackMessage[] }> {
   return fetchJSON<{ messages: SlackMessage[] }>('/api/slack/messages');
+}
+
+export async function listSlackThreadReplies(
+  channelId: string,
+  threadTs: string
+): Promise<{ messages: SlackMessage[] }> {
+  const params = new URLSearchParams({ channelId, threadTs });
+  return fetchJSON<{ messages: SlackMessage[] }>(`/api/slack/threads?${params.toString()}`);
 }
 
 export interface JiraProjectSummary {

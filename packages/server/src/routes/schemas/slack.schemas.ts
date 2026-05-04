@@ -47,8 +47,16 @@ export const slackMessageSchema = z
     userDisplay: z.string(),
     text: z.string(),
     permalink: z.string(),
+    threadTs: z.string().nullable(),
+    replyCount: z.number(),
+    latestReply: z.string().nullable(),
   })
   .openapi('SlackMessage');
+
+export const slackThreadRepliesQuerySchema = z.object({
+  channelId: z.string().min(1),
+  threadTs: z.string().min(1),
+});
 
 export const slackMessagesResponseSchema = z
   .object({

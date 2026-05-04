@@ -94,6 +94,7 @@ import {
   saveSlackConfig,
   clearSlackConfig,
   getRecentMessages,
+  getThreadReplies,
   verifySlackToken,
 } from '@archon/core/slack-inbox';
 import { listGroupWorktrees, removeGroupWorktree } from '@archon/isolation';
@@ -109,6 +110,7 @@ import {
   slackConfigInputSchema,
   slackTestResponseSchema,
   slackMessagesResponseSchema,
+  slackThreadRepliesQuerySchema,
   jiraProjectsResponseSchema,
   jiraCreateIssueInputSchema,
   jiraCreatedIssueSchema,
@@ -736,6 +738,22 @@ const slackMessagesRoute = createRoute({
       description: 'Messages',
     },
     400: jsonError('Slack not configured / Slack returned an error'),
+    500: jsonError('Server error'),
+  },
+});
+
+const slackThreadRepliesRoute = createRoute({
+  method: 'get',
+  path: '/api/slack/threads',
+  tags: ['Settings'],
+  summary: 'Replies in a Slack thread (parent excluded — UI already has it)',
+  request: { query: slackThreadRepliesQuerySchema },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: slackMessagesResponseSchema } },
+      description: 'Replies',
+    },
+    400: jsonError('Slack not configured / bad query'),
     500: jsonError('Server error'),
   },
 });
@@ -2302,6 +2320,23 @@ export function registerApiRoutes(
       // 400 instead of 500 so the UI shows the actionable message body
       // (e.g. "Invite the bot to that channel: /invite @<bot>").
       getLog().warn({ err: error }, 'slack_messages_failed');
+      return apiError(c, 400, (error as Error).message);
+    }
+  });
+
+  registerOpenApiRoute(slackThreadRepliesRoute, async c => {
+    const cfg = await getSlackConfig();
+    if (!cfg) return apiError(c, 400, 'Slack not configured.');
+    const channelId = c.req.query('channelId') ?? '';
+    const threadTs = c.req.query('threadTs') ?? '';
+    if (!channelId || !threadTs) {
+      return apiError(c, 400, 'channelId and threadTs query params required.');
+    }
+    try {
+      const messages = await getThreadReplies(cfg, channelId, threadTs);
+      return c.json({ messages });
+    } catch (error) {
+      getLog().warn({ err: error, channelId, threadTs }, 'slack_thread_replies_failed');
       return apiError(c, 400, (error as Error).message);
     }
   });

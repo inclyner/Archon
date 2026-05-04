@@ -159,6 +159,16 @@ export interface SlackMessage {
   text: string;
   /** Permalink to the message in Slack (slack.com/archives/<channel>/p<ts>). */
   permalink: string;
+  /**
+   * Thread parent timestamp. Null for non-threaded messages, equal to `ts`
+   * for thread parents themselves, and equal to the parent's ts for replies.
+   * UI uses this to know when to render a "🧵 N replies" expander.
+   */
+  threadTs: string | null;
+  /** Number of replies in the thread. 0 for non-threaded messages. */
+  replyCount: number;
+  /** ISO timestamp of the most recent reply, if any. */
+  latestReply: string | null;
 }
 
 interface SlackHistoryEntry {
@@ -168,6 +178,12 @@ interface SlackHistoryEntry {
   text?: string;
   bot_id?: string;
   subtype?: string;
+  /** Present on thread parents AND replies; absent on non-threaded messages. */
+  thread_ts?: string;
+  /** Only present on thread parents. Replies don't carry this. */
+  reply_count?: number;
+  /** ISO-ish ts of the most recent reply. Only on thread parents. */
+  latest_reply?: string;
 }
 
 interface SlackHistoryResponse {
@@ -236,6 +252,45 @@ async function resolveChannelName(token: string, channelId: string): Promise<str
     getLog().warn({ err: e as Error, channelId }, 'slack.channel_info_failed');
   }
   return channelId; // fall back to id so the UI can still render
+}
+
+/**
+ * Slack message text contains mentions and links in their wire format:
+ *   <@U12345>           — user mention
+ *   <#C12345|name>      — channel mention
+ *   <!here>, <!channel> — special mentions
+ *   <https://url|text>  — link with display text
+ *   <https://url>       — bare URL
+ *
+ * We rewrite all of these into a human-readable form. User IDs are
+ * resolved to display names via the same in-memory cache the message
+ * loop uses (no extra API calls if the user has appeared anywhere else).
+ *
+ * Channel IDs we don't bother resolving — Slack's wire format already
+ * embeds the name after the `|`. We just strip the brackets.
+ */
+async function rewriteMentions(token: string, text: string): Promise<string> {
+  // Collect all <@USERID> matches up front so we can resolve them in one
+  // pass without holding the regex engine in an async loop.
+  const userIdMatches = Array.from(text.matchAll(/<@([A-Z0-9]+)(?:\|[^>]+)?>/g));
+  const idToName = new Map<string, string>();
+  for (const match of userIdMatches) {
+    const id = match[1];
+    if (idToName.has(id)) continue;
+    idToName.set(id, await resolveUserDisplay(token, id));
+  }
+
+  return text
+    .replace(/<@([A-Z0-9]+)(?:\|[^>]+)?>/g, (_, id: string) => `@${idToName.get(id) ?? id}`)
+    .replace(/<#[A-Z0-9]+\|([^>]+)>/g, (_, name: string) => `#${name}`)
+    .replace(/<#([A-Z0-9]+)>/g, (_, id: string) => `#${id}`)
+    .replace(/<!here>/g, '@here')
+    .replace(/<!channel>/g, '@channel')
+    .replace(/<!everyone>/g, '@everyone')
+    .replace(/<!subteam\^[A-Z0-9]+\|([^>]+)>/g, (_, name: string) => `@${name}`)
+    .replace(/<(https?:\/\/[^|>]+)\|([^>]+)>/g, (_, _url: string, label: string) => label)
+    .replace(/<(https?:\/\/[^>]+)>/g, (_, url: string) => url)
+    .replace(/<mailto:([^|>]+)(?:\|[^>]+)?>/g, (_, email: string) => email);
 }
 
 async function resolveUserDisplay(token: string, userId: string): Promise<string> {
@@ -323,14 +378,77 @@ export async function getRecentMessages(
         timestamp,
         userId,
         userDisplay,
-        text: m.text,
+        text: await rewriteMentions(cfg.token, m.text),
         // Slack permalinks: slack.com/archives/<channel>/p<ts-without-dot>
         permalink: `https://slack.com/archives/${channelId}/p${m.ts.replace('.', '')}`,
+        threadTs: m.thread_ts ?? null,
+        replyCount: m.reply_count ?? 0,
+        latestReply: m.latest_reply ? new Date(Number(m.latest_reply) * 1000).toISOString() : null,
       });
     }
   }
   // Newest first.
   out.sort((a, b) => (a.timestamp < b.timestamp ? 1 : -1));
+  return out;
+}
+
+/**
+ * Fetch all replies in a thread (excluding the parent — Slack returns the
+ * parent first, we strip it). Used by the inbox's "🧵 N replies" expander.
+ *
+ * Slack's `conversations.replies` always echoes the parent as the first
+ * item; the UI already shows the parent in the feed, so we drop it.
+ */
+export async function getThreadReplies(
+  cfg: SlackConfig,
+  channelId: string,
+  threadTs: string
+): Promise<SlackMessage[]> {
+  let history: SlackHistoryResponse;
+  try {
+    history = await slackCall<SlackHistoryResponse>(cfg.token, 'conversations.replies', {
+      channel: channelId,
+      ts: threadTs,
+      limit: '100',
+    });
+  } catch (e) {
+    getLog().warn({ err: e as Error, channelId, threadTs }, 'slack.replies_call_failed');
+    throw e;
+  }
+  if (!history.ok) {
+    throw new Error(
+      `Slack returned "${history.error ?? 'unknown'}" for thread ${threadTs} in ${channelId}.`
+    );
+  }
+  const channelName = await resolveChannelName(cfg.token, channelId);
+  const out: SlackMessage[] = [];
+  for (const m of history.messages ?? []) {
+    // The first item in Slack's reply list is the parent — skip it.
+    if (m.ts === threadTs) continue;
+    if (!m.text || m.text.trim().length === 0) continue;
+    const userId = m.user ?? null;
+    const userDisplay = userId ? await resolveUserDisplay(cfg.token, userId) : (m.bot_id ?? 'bot');
+    const tsNum = Number(m.ts);
+    const timestamp = Number.isFinite(tsNum)
+      ? new Date(tsNum * 1000).toISOString()
+      : new Date().toISOString();
+    out.push({
+      id: `${channelId}:${m.ts}`,
+      channelId,
+      channelName,
+      ts: m.ts,
+      timestamp,
+      userId,
+      userDisplay,
+      text: await rewriteMentions(cfg.token, m.text),
+      permalink: `https://slack.com/archives/${channelId}/p${m.ts.replace('.', '')}?thread_ts=${threadTs}`,
+      threadTs: m.thread_ts ?? threadTs,
+      replyCount: 0,
+      latestReply: null,
+    });
+  }
+  // Replies in chronological order — older first, newer last (matches Slack UI).
+  out.sort((a, b) => (a.timestamp < b.timestamp ? -1 : 1));
   return out;
 }
 

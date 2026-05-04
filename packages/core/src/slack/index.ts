@@ -5,6 +5,7 @@ export {
   saveSlackConfig,
   clearSlackConfig,
   getRecentMessages,
+  getThreadReplies,
   verifySlackToken,
   type SlackConfig,
   type SlackConfigStatus,
