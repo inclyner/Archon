@@ -223,15 +223,16 @@ export interface JiraCreatedIssue {
 }
 
 /**
- * Create a Jira issue. v1: hardcodes issue type to "Task" — most "make a
- * ticket from this Slack message" use cases want Task. Configurable later.
+ * Create a Jira issue. issueType defaults to "Task" when the caller doesn't
+ * specify; the AI-suggest flow passes the model's guess (Bug / Story / etc.)
+ * and the user can edit before clicking Create.
  *
  * Description is plain text; we wrap it in minimal ADF (Atlassian Document
  * Format) — one paragraph per blank-line-separated chunk.
  */
 export async function createJiraIssue(
   creds: JiraCreds,
-  input: { projectKey: string; summary: string; description: string }
+  input: { projectKey: string; summary: string; description: string; issueType?: string }
 ): Promise<JiraCreatedIssue> {
   const adfDescription = {
     type: 'doc',
@@ -264,7 +265,7 @@ export async function createJiraIssue(
         project: { key: input.projectKey },
         summary: input.summary,
         description: adfDescription,
-        issuetype: { name: 'Task' },
+        issuetype: { name: input.issueType ?? 'Task' },
       },
     }),
   });

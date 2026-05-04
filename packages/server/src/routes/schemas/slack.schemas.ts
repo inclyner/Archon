@@ -71,8 +71,30 @@ export const jiraCreateIssueInputSchema = z
     description: z.string(),
     /** Optional override; falls back to slack.default_jira_project_key. */
     projectKey: z.string().optional(),
+    /** Defaults to "Task" server-side when omitted. */
+    issueType: z.string().optional(),
   })
   .openapi('JiraCreateIssueInput');
+
+/** POST /api/jira/issues/draft body. */
+export const jiraDraftIssueInputSchema = z
+  .object({
+    messageText: z.string().min(1),
+    channelName: z.string().min(1),
+    userDisplay: z.string().min(1),
+    slackPermalink: z.string().min(1),
+    extraContext: z.string().optional(),
+  })
+  .openapi('JiraDraftIssueInput');
+
+export const jiraDraftIssueResponseSchema = z
+  .object({
+    summary: z.string(),
+    extraContext: z.string(),
+    issueType: z.enum(['Bug', 'Task', 'Story', 'Improvement']),
+    severity: z.enum(['low', 'medium', 'high', 'critical']),
+  })
+  .openapi('JiraDraftIssueResponse');
 
 export const jiraCreatedIssueSchema = z
   .object({

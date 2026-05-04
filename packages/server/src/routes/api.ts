@@ -112,6 +112,8 @@ import {
   jiraProjectsResponseSchema,
   jiraCreateIssueInputSchema,
   jiraCreatedIssueSchema,
+  jiraDraftIssueInputSchema,
+  jiraDraftIssueResponseSchema,
 } from './schemas/slack.schemas';
 import { errorSchema } from './schemas/common.schemas';
 import { updateCheckResponseSchema } from './schemas/system.schemas';
@@ -642,6 +644,23 @@ const jiraCreateIssueRoute = createRoute({
       description: 'Created',
     },
     400: jsonError('Validation / not configured'),
+    500: jsonError('Server error'),
+  },
+});
+
+const jiraDraftIssueRoute = createRoute({
+  method: 'post',
+  path: '/api/jira/issues/draft',
+  tags: ['Settings'],
+  summary: 'AI-suggest a clean ticket title + structured description from a Slack message',
+  request: {
+    body: { content: { 'application/json': { schema: jiraDraftIssueInputSchema } } },
+  },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: jiraDraftIssueResponseSchema } },
+      description: 'Draft',
+    },
     500: jsonError('Server error'),
   },
 });
@@ -2180,10 +2199,25 @@ export function registerApiRoutes(
         projectKey,
         summary: body.summary,
         description: body.description,
+        issueType: body.issueType,
       });
       return c.json(issue);
     } catch (error) {
       getLog().error({ err: error, projectKey }, 'jira_create_issue_failed');
+      return apiError(c, 500, (error as Error).message);
+    }
+  });
+
+  registerOpenApiRoute(jiraDraftIssueRoute, async c => {
+    const body = getValidatedBody(c, jiraDraftIssueInputSchema);
+    try {
+      const { draftJiraTicket } = await import('@archon/core/services/jira-ticket-drafter');
+      // Use the env default assistant — no per-conversation context here.
+      const assistantType = process.env.DEFAULT_AI_ASSISTANT ?? 'claude';
+      const draft = await draftJiraTicket(body, assistantType);
+      return c.json(draft);
+    } catch (error) {
+      getLog().error({ err: error }, 'jira_draft_issue_failed');
       return apiError(c, 500, (error as Error).message);
     }
   });
