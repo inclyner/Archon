@@ -2,7 +2,13 @@ import { useEffect, useRef, useState, useMemo } from 'react';
 import { useNavigate } from 'react-router';
 import { useQuery } from '@tanstack/react-query';
 import { Search, X } from 'lucide-react';
-import { listWorkflows, createConversation, runWorkflow, deleteConversation } from '@/lib/api';
+import {
+  listWorkflows,
+  createConversation,
+  runWorkflow,
+  deleteConversation,
+  listWorkspaceGroups,
+} from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { useProject } from '@/contexts/ProjectContext';
 import { WorkflowCard } from '@/components/workflows/WorkflowCard';
@@ -21,13 +27,24 @@ export function WorkflowList(): React.ReactElement {
   const [runError, setRunError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeCategory, setActiveCategory] = useState<WorkflowCategory>('All');
-  const { codebases, selectedProjectId } = useProject();
+  const { codebases, selectedProjectId, selectedGroupId } = useProject();
   const [localProjectId, setLocalProjectId] = useState<string | null>(selectedProjectId);
+  const [localGroupId, setLocalGroupId] = useState<string | null>(selectedGroupId);
   const messageInputRef = useRef<HTMLInputElement>(null);
+
+  const { data: groups } = useQuery({
+    queryKey: ['workspace-groups'],
+    queryFn: listWorkspaceGroups,
+    staleTime: 30_000,
+  });
 
   useEffect(() => {
     setLocalProjectId(selectedProjectId);
   }, [selectedProjectId]);
+
+  useEffect(() => {
+    setLocalGroupId(selectedGroupId);
+  }, [selectedGroupId]);
 
   // Focus message input when a workflow is selected
   useEffect(() => {
@@ -52,7 +69,15 @@ export function WorkflowList(): React.ReactElement {
     let conversationId: string | undefined;
     let workflowStarted = false;
     try {
-      ({ conversationId } = await createConversation(localProjectId ?? undefined));
+      // Group selected: tag the conversation with workspaceGroupId so the
+      // orchestrator auto-injects --group <name> when it sees the workflow
+      // run command. Codebase selected: regular codebase-scoped conversation.
+      // Neither: unscoped (existing behaviour).
+      ({ conversationId } = await createConversation(
+        localGroupId ? undefined : (localProjectId ?? undefined),
+        undefined,
+        localGroupId ?? undefined
+      ));
       await runWorkflow(workflowName, conversationId, runMessage.trim());
       workflowStarted = true;
       setRunMessage('');
@@ -224,20 +249,50 @@ export function WorkflowList(): React.ReactElement {
               </button>
             </div>
 
-            {/* Project picker */}
+            {/* Scope picker — unifies workspace groups + single codebases.
+                Encoding: option values are prefixed `cb:<id>` for codebases
+                or `grp:<id>` for groups so the onChange can route to the
+                right state without an extra dropdown. */}
             <select
-              value={localProjectId ?? ''}
+              value={
+                localGroupId ? `grp:${localGroupId}` : localProjectId ? `cb:${localProjectId}` : ''
+              }
               onChange={(e): void => {
-                setLocalProjectId(e.target.value || null);
+                const v = e.target.value;
+                if (!v) {
+                  setLocalProjectId(null);
+                  setLocalGroupId(null);
+                  return;
+                }
+                if (v.startsWith('grp:')) {
+                  setLocalGroupId(v.slice(4));
+                  setLocalProjectId(null);
+                } else if (v.startsWith('cb:')) {
+                  setLocalProjectId(v.slice(3));
+                  setLocalGroupId(null);
+                }
               }}
-              className="w-48 shrink-0 rounded-md border border-border bg-surface px-2 py-1.5 text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-accent"
+              className="w-56 shrink-0 rounded-md border border-border bg-surface px-2 py-1.5 text-xs text-text-primary focus:outline-none focus:ring-1 focus:ring-accent"
             >
-              <option value="">No project</option>
-              {codebases?.map(cb => (
-                <option key={cb.id} value={cb.id}>
-                  {cb.name}
-                </option>
-              ))}
+              <option value="">No scope</option>
+              {groups && groups.length > 0 && (
+                <optgroup label="Workspace Groups (cross-repo)">
+                  {groups.map(g => (
+                    <option key={g.id} value={`grp:${g.id}`}>
+                      {g.name}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
+              {codebases && codebases.length > 0 && (
+                <optgroup label="Codebases">
+                  {codebases.map(cb => (
+                    <option key={cb.id} value={`cb:${cb.id}`}>
+                      {cb.name}
+                    </option>
+                  ))}
+                </optgroup>
+              )}
             </select>
 
             {/* Message input + Run button */}

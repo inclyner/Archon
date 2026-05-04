@@ -466,8 +466,30 @@ export async function createJiraIssue(input: {
   summary: string;
   description: string;
   projectKey?: string;
+  issueType?: string;
 }): Promise<JiraCreatedIssue> {
   return fetchJSON<JiraCreatedIssue>('/api/jira/issues', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  });
+}
+
+export interface DraftJiraTicket {
+  summary: string;
+  extraContext: string;
+  issueType: 'Bug' | 'Task' | 'Story' | 'Improvement';
+  severity: 'low' | 'medium' | 'high' | 'critical';
+}
+
+export async function draftJiraTicketFromSlack(input: {
+  messageText: string;
+  channelName: string;
+  userDisplay: string;
+  slackPermalink: string;
+  extraContext?: string;
+}): Promise<DraftJiraTicket> {
+  return fetchJSON<DraftJiraTicket>('/api/jira/issues/draft', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),

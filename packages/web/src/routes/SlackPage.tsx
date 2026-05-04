@@ -22,6 +22,7 @@ import {
   ChevronDown,
   ChevronRight,
   AlertCircle,
+  Sparkles,
 } from 'lucide-react';
 import { Header } from '@/components/layout/Header';
 import { Button } from '@/components/ui/button';
@@ -32,6 +33,7 @@ import {
   listSlackMessages,
   listSlackThreadReplies,
   createJiraIssue,
+  draftJiraTicketFromSlack,
   type SlackMessage,
   type JiraCreatedIssue,
 } from '@/lib/api';
@@ -341,6 +343,28 @@ function CreateTicketForm({
   const [summary, setSummary] = useState(defaultSummary);
   const [extraDescription, setExtraDescription] = useState('');
   const [showPreview, setShowPreview] = useState(false);
+  const [aiIssueType, setAiIssueType] = useState<string | null>(null);
+  const [aiSeverity, setAiSeverity] = useState<string | null>(null);
+
+  const suggest = useMutation({
+    mutationFn: () =>
+      draftJiraTicketFromSlack({
+        messageText: message.text,
+        channelName: message.channelName,
+        userDisplay: message.userDisplay,
+        slackPermalink: message.permalink,
+        extraContext: extraDescription || undefined,
+      }),
+    onSuccess: draft => {
+      // Replace summary + extra context with the AI's structured output.
+      // The full-description assembly is unchanged — Slack quote +
+      // permalink still get appended automatically below the AI's body.
+      setSummary(draft.summary);
+      setExtraDescription(draft.extraContext);
+      setAiIssueType(draft.issueType);
+      setAiSeverity(draft.severity);
+    },
+  });
 
   // Keep the summary in sync if the user navigates between messages without
   // unmounting the form (rare but cheap).
@@ -366,6 +390,10 @@ function CreateTicketForm({
       createJiraIssue({
         summary: summary.trim() || defaultSummary,
         description: fullDescription,
+        // If the AI suggested a type and the user hasn't backed away from
+        // the form, file with that type. Otherwise the server defaults
+        // to "Task".
+        issueType: aiIssueType ?? undefined,
       }),
     onSuccess: issue => {
       onCreated(issue);
@@ -415,8 +443,56 @@ function CreateTicketForm({
           {create.error.message}
         </div>
       )}
+      {suggest.isError && (
+        <div className="rounded-md border border-error/40 bg-error/5 px-2 py-1 text-[11px] text-error">
+          {suggest.error.message}
+        </div>
+      )}
+      {aiIssueType && (
+        <div className="flex items-center gap-2 text-[11px] text-text-tertiary">
+          <Sparkles className="h-3 w-3 text-primary" />
+          AI suggests:{' '}
+          <span className="rounded bg-surface px-1.5 py-0.5 font-medium text-text-primary">
+            {aiIssueType}
+          </span>
+          {aiSeverity && (
+            <>
+              {' '}
+              severity{' '}
+              <span
+                className={`rounded px-1.5 py-0.5 font-medium ${
+                  aiSeverity === 'critical' || aiSeverity === 'high'
+                    ? 'bg-error/15 text-error'
+                    : aiSeverity === 'medium'
+                      ? 'bg-yellow-500/15 text-yellow-500'
+                      : 'bg-surface text-text-secondary'
+                }`}
+              >
+                {aiSeverity}
+              </span>
+            </>
+          )}
+          <span className="text-text-tertiary">— edit before clicking Create if needed.</span>
+        </div>
+      )}
 
       <div className="flex items-center gap-2">
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={(): void => {
+            suggest.mutate();
+          }}
+          disabled={suggest.isPending || create.isPending}
+          title="Use Claude to draft a clean summary + structured description"
+        >
+          {suggest.isPending ? (
+            <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Sparkles className="mr-1 h-3.5 w-3.5" />
+          )}
+          Generate with Claude
+        </Button>
         <Button
           size="sm"
           onClick={(): void => {
